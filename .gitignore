@@ -1,0 +1,6 @@
+.settings/
+.vscode/
+build/
+.cache/
+mx.scratch
+!.settings
