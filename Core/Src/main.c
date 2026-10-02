@@ -23,6 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "encoder.h"
 #include "led.h"
 #include "motor.h"
 #include "oled_software_i2c.h"
@@ -95,6 +96,7 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   Motor_Init();
+  Encoder_Init();
   OLED_Init();
 
   /* USER CODE END 2 */
@@ -106,6 +108,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    /* ----- 编码器使用示例（在定时中断中调用） ----- */
+    int16_t speed_left = Encoder_GetSpeed(&encoder_left);
+    int16_t speed_right = Encoder_GetSpeed(&encoder_right);
   }
   /* USER CODE END 3 */
 }
