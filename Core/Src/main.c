@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "led.h"
 #include "motor.h"
+#include "oled_software_i2c.h"
 
 /* USER CODE END Includes */
 
@@ -94,6 +95,7 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   Motor_Init();
+  OLED_Init();
 
   /* USER CODE END 2 */
 
