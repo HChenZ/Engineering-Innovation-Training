@@ -23,6 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "motor.h"
 
 /* USER CODE END Includes */
 
@@ -91,6 +92,7 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+  Motor_Init();
 
   /* USER CODE END 2 */
 

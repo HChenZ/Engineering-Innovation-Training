@@ -45,12 +45,13 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    BSP/Src/motor.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    BSP/Inc
     # Add user defined include paths
+    BSP/Inc
 )
 
 # Add project symbols (macros)
