@@ -27,6 +27,7 @@
 #include "led.h"
 #include "motor.h"
 #include "oled_software_i2c.h"
+#include "avoid.h"
 
 /* USER CODE END Includes */
 
@@ -98,7 +99,7 @@ int main(void)
   Motor_Init();
   Encoder_Init();
   OLED_Init();
-
+  Avoid_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -112,6 +113,34 @@ int main(void)
     /* ----- 编码器使用示例（在定时中断中调用） ----- */
     int16_t speed_left = Encoder_GetSpeed(&encoder_left);
     int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+    /* ----- 超声波避障 ----- */
+    switch (Avoid_Update())
+    {
+    case AVOID_FOLLOW: /* 正常循迹，交还给寻迹逻辑 */
+        break;
+
+    case AVOID_SLOW: /* 循迹但减速 */
+        break;
+
+    case AVOID_BRAKE: /* 立即刹车 */
+        Motor_BrakeAll();
+        break;
+
+    case AVOID_TURN_LEFT: /* 原地左转 */
+        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 40);
+        break;
+
+    case AVOID_TURN_RIGHT: /* 原地右转 */
+        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, 40);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
+        break;
+
+    case AVOID_BACK: /* 后退（默认关掉了，一般不会走到） */
+        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
+        break;
+    }
   }
   /* USER CODE END 3 */
 }
