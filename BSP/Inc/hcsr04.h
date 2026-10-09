@@ -3,9 +3,9 @@
 
 // 超声波模块：HC-SR04（2020款，宽电压 3-5.5V，默认 GPIO 模式）
 // 底板预留 3 路插座，驱动全部支持，用哪几路由 avoid.c 决定：
-//   U1（左）: TRIG = PA8    ECHO = PA9
-//   U2（中）: TRIG = PA10   ECHO = PA11
-//   U4（右）: TRIG = PA4    ECHO = PA5
+//   U1（车头右侧）: TRIG = PA8    ECHO = PA9
+//   U2（车头正中）: TRIG = PA10   ECHO = PA11
+//   U4（车头左侧）: TRIG = PA4    ECHO = PA5
 //
 // 模块参数（厂家手册）
 //   供电 3-5.5V   电流 2.2mA   量程 2-450cm   盲区 2-4cm
@@ -21,9 +21,9 @@
 /* 超声波编号 */
 typedef enum
 {
-    HCSR04_LEFT = 0, /* U1：车头左侧，探头向外斜 */
+    HCSR04_LEFT = 0, /* U4：车头左侧，探头向外斜 */
     HCSR04_CENTER,   /* U2：车头正中（当前未装，见 avoid.h 的 AVOID_USE_CENTER） */
-    HCSR04_RIGHT,    /* U4：车头右侧，探头向外斜 */
+    HCSR04_RIGHT,    /* U1：车头右侧，探头向外斜 */
     HCSR04_ID_COUNT
 } HCSR04_ID;
 

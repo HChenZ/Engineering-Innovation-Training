@@ -17,17 +17,22 @@ typedef struct
 } HCSR04_PinConfig;
 
 /* 全局超声波引脚映射表
- * 如果发现左右装反了，只需要交换下面两行的顺序即可 */
+ *
+ * 车上实际安装位置（2026-10-09 确认）：
+ *   U1 在车头【右侧】   U2 在中间   U4 在车头【左侧】
+ *
+ * 所以 HCSR04_RIGHT 对应 U1 的引脚，HCSR04_LEFT 对应 U4 的引脚。
+ * 如果以后又把探头位置换了，只要调换下面对应的两个注释块即可。 */
 static const HCSR04_PinConfig hcsr04Config[] = {
-    {/* HCSR04_LEFT  -> U1 插座：PA8 / PA9 */
-     HC_Trig1_GPIO_Port, HC_Trig1_Pin,
-     HC_Echo1_GPIO_Port, HC_Echo1_Pin},
-    {/* HCSR04_CENTER -> U2 插座：PA10 / PA11 */
+    {/* HCSR04_LEFT  -> U4 插座（车头左侧）：PA4 / PA5 */
+     HC_Trig3_GPIO_Port, HC_Trig3_Pin,
+     HC_Echo3_GPIO_Port, HC_Echo3_Pin},
+    {/* HCSR04_CENTER -> U2 插座（车头正中）：PA10 / PA11 */
      HC_Trig2_GPIO_Port, HC_Trig2_Pin,
      HC_Echo2_GPIO_Port, HC_Echo2_Pin},
-    {/* HCSR04_RIGHT -> U4 插座：PA4 / PA5 */
-     HC_Trig3_GPIO_Port, HC_Trig3_Pin,
-     HC_Echo3_GPIO_Port, HC_Echo3_Pin}};
+    {/* HCSR04_RIGHT -> U1 插座（车头右侧）：PA8 / PA9 */
+     HC_Trig1_GPIO_Port, HC_Trig1_Pin,
+     HC_Echo1_GPIO_Port, HC_Echo1_Pin}};
 
 /* TIM2/TIM3/TIM4 已经被电机和编码器占用，
  * 这里用 Cortex-M3 自带的 DWT 周期计数器做微秒计时，不需要额外外设。 */
