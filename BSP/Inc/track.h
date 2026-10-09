@@ -37,7 +37,7 @@
 /* 传感器"压线"时的有效电平（指 CD4051 Out 脚上的电平）
  *   0 = 低电平有效：压到黑线时 Out 输出 0（压线灯灭）
  *   1 = 高电平有效：压到黑线时 Out 输出 1（压线灯亮）
- * 已按实车确认：压线灯灭 = 输出 0 */
+ * 已按实车确认：压线灯灭 = 0，没压线灯亮 = 1，故填 0 */
 #define TRACK_ACTIVE_LEVEL 0
 
 /* 位置方向反转：
@@ -48,6 +48,9 @@
 
 /* 位置偏差满量程：Track_GetPosition() 返回 -TRACK_POS_MAX ~ +TRACK_POS_MAX */
 #define TRACK_POS_MAX 1000
+
+/* 丢线找线转向值：丢线时按此值往反方向转，往回扫描找线（0~TRACK_POS_MAX） */
+#define TRACK_LOST_STEER 500
 
 /* ==================== 循迹建议动作 ==================== */
 
@@ -80,6 +83,9 @@ int16_t Track_GetPosition(void);
 
 /* 是否丢线（所有通道都没压线） */
 uint8_t Track_IsLost(void);
+
+/* 是否 8 路全部压线（全黑，常见于终点线/停止线/宽黑块） */
+uint8_t Track_AllBlack(void);
 
 /* 每个主循环调用一次：刷新采样并返回离散建议动作。
  * 只想拿连续偏差自己做 PID，就只用 Track_GetPosition()，不必管这个 */

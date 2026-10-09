@@ -42,7 +42,7 @@
 /* USER CODE BEGIN PD */
 /* 目标直行速度（单位：脉冲/10ms，取决于车速，需实车标定）
  * 例：车轮输出轴 1 圈/秒 ≈ 1040 脉冲/秒 ≈ 10.4 脉冲/10ms */
-#define TRACK_SPEED_NORMAL 20   /* 正常循迹目标速度 */
+#define TRACK_SPEED_NORMAL 25   /* 正常循迹目标速度 */
 #define TRACK_SPEED_SLOW   10   /* 避障减速目标速度 */
 
 /* 电机一致性测试模式：
@@ -84,6 +84,7 @@ static PID_t pid_speed_r;  /* 右轮速度环 */
 
 /* 控制状态（主循环写，TIM1 中断读，volatile 保证可见性） */
 volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
+volatile uint8_t g_stop = 0;          /* 终止停车标志：8 路全黑触发，置 1 后永久停止 */
 volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
 
 /* 调试观测值（中断写，主循环读，OLED 显示用） */
@@ -140,10 +141,10 @@ int main(void)
   MX_TIM1_Init();
   HAL_TIM_Base_Start_IT(&htim1);
 
-  /* PID 参数初始化（初值需实车调，见各环注释） */
-  PID_Init(&pid_pos,     0.02f, 0.0f, 0.4f, 500.0f, -30.0f, 30.0f);   /* 位置环 */
-  PID_Init(&pid_speed_l, 3.0f,  0.1f, 0.0f, 300.0f, -100.0f, 100.0f); /* 左速度环 */
-  PID_Init(&pid_speed_r, 3.0f,  0.1f, 0.0f, 300.0f, -100.0f, 100.0f); /* 右速度环 */
+  /* PID 参数初始化（需实车调，见各环注释） */
+  PID_Init(&pid_pos,     0.05f, 0.0f, 0.0f, 500.0f, -30.0f, 30.0f);   /* 位置环：纯 P，限幅防边缘掉头 */
+  PID_Init(&pid_speed_l, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 左速度环 */
+  PID_Init(&pid_speed_r, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 右速度环 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -153,6 +154,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    if (g_stop)
+    {
+        /* 终止停车已触发：电机保持刹车状态，不再做任何控制 */
+        HAL_Delay(10);
+        continue;
+    }
 
 #if MOTOR_TEST_MODE
     /* ----- 电机一致性测试：固定目标速度，左右轮速度环各自闭环 ----- */
@@ -270,8 +278,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (htim->Instance != TIM1)
         return;
 
+    if (g_stop)
+        return;  /* 已触发终止停车，不再控制 */
+
     if (!g_track_enable)
         return;  /* 避障接管，中断不控电机 */
+
+    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车 */
+    if (Track_AllBlack())
+    {
+        g_stop = 1;
+        g_track_enable = 0;
+        Motor_BrakeAll();
+        return;
+    }
 
     /* 1. 读编码器速度（脉冲/10ms，带符号） */
     int16_t vL = Encoder_GetSpeed(&encoder_left);

@@ -6,6 +6,12 @@ static int16_t last_position = 0;
 /* 丢线标记 */
 static uint8_t lost = 0;
 
+/* 位置权重表（官方 1,2,4,5 方案，左右对称 8 路）：
+ * 中间两路权重 ±1，往外 ±2、±4，最外 ±5。
+ * 中间分辨率高、边缘不过猛，兼顾直线稳定和连续弯道。
+ * 注意：只针对 8 路，若改 TRACK_CHANNEL_COUNT 需同步调整。 */
+static const int8_t track_weight[8] = {-5, -4, -2, -1, 1, 2, 4, 5};
+
 /* CD4051 地址建立延时：写完地址后输出要几百 ns 才稳定，
  * 72MHz 下这段空循环约 1us，足够覆盖。 */
 static void Track_SettleDelay(void)
@@ -92,21 +98,27 @@ int16_t Track_GetPosition(void)
 
     if (bitmap == 0)
     {
-        /* 丢线：保持上一次偏差，让小车按记忆方向继续走，直到重新压线 */
+        /* 丢线：往反方向转，往回找线。
+         * 之前线在右（last_position>0）说明右转冲过了线，现在左转往回扫。
+         * 注意：这只对"转向过冲"丢线有效；若是"急弯线在前方"丢线，
+         * 反方向会找反，届时改回记忆方向或加限时停车。 */
         lost = 1;
-        return last_position;
+        if (last_position > 0)
+            return (int16_t)(-TRACK_LOST_STEER);
+        if (last_position < 0)
+            return (int16_t)TRACK_LOST_STEER;
+        return 0;
     }
 
     /* 加权平均求"压线质心"：
-     * 通道 i 的权重从 -(N-1) 到 +(N-1)（最左到最右），
-     * 质心 = sum(weight_i) / sum(active_i)，再归一化到 ±TRACK_POS_MAX。
-     * 例：8 路时通道 0 单独压线 -> -1000，通道 7 -> +1000，通道 3/4 之间 -> 0。 */
+     * 用 track_weight 表（官方 1,2,4,5）加权，再归一化到 ±TRACK_POS_MAX。
+     * 例：8 路时通道 0 单独压线 -> -1000，通道 7 -> +1000，
+     *     通道 3 -> -200，通道 4 -> +200（中间分辨率比线性权重更高）。 */
     for (i = 0; i < TRACK_CHANNEL_COUNT; i++)
     {
         if (bitmap & (1u << i))
         {
-            int32_t w = (int32_t)i * 2 - (TRACK_CHANNEL_COUNT - 1);
-            sum_w += w;
+            sum_w += track_weight[i];
             sum_a++;
         }
     }
@@ -117,7 +129,7 @@ int16_t Track_GetPosition(void)
     if (sum_a == 0)
         return last_position;
 
-    pos = (int16_t)((sum_w * TRACK_POS_MAX) / ((TRACK_CHANNEL_COUNT - 1) * sum_a));
+    pos = (int16_t)((sum_w * TRACK_POS_MAX) / (5 * sum_a));  /* 5 = 最边缘权重，单路压边 -> 满偏 */
 
 #if TRACK_INVERT
     pos = (int16_t)(-pos);
@@ -130,6 +142,14 @@ int16_t Track_GetPosition(void)
 uint8_t Track_IsLost(void)
 {
     return lost;
+}
+
+uint8_t Track_AllBlack(void)
+{
+    uint8_t bitmap = Track_ReadAll();
+
+    /* 8 路全压线 -> bitmap 全 1 */
+    return (bitmap == (uint8_t)((1u << TRACK_CHANNEL_COUNT) - 1)) ? 1 : 0;
 }
 
 TrackState Track_Update(void)
