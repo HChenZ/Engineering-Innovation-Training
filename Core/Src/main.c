@@ -28,6 +28,7 @@
 #include "motor.h"
 #include "oled_software_i2c.h"
 #include "avoid.h"
+#include "track.h"
 
 /* USER CODE END Includes */
 
@@ -55,7 +56,7 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+static void Track_Control(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -100,6 +101,7 @@ int main(void)
   Encoder_Init();
   OLED_Init();
   Avoid_Init();
+  Track_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -117,6 +119,7 @@ int main(void)
     switch (Avoid_Update())
     {
     case AVOID_FOLLOW: /* 正常循迹，交还给寻迹逻辑 */
+        Track_Control();
         break;
 
     case AVOID_SLOW: /* 循迹但减速 */
@@ -185,6 +188,34 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/* ==================== 循迹比例控制 ==================== */
+/* 循迹基础速度（占空比 0~100），按实车调 */
+#define TRACK_BASE_SPEED 40
+/* 转向增益：偏差满量程(1000)时对应的左右轮速度差 */
+#define TRACK_KP         40
+
+/* 循迹差速控制：根据位置偏差做比例转向。
+ * pos > 0（线偏右）-> 左轮快、右轮慢 -> 右转，反之左转 */
+static void Track_Control(void)
+{
+    int16_t pos = Track_GetPosition();
+    int16_t steer = (int16_t)((int32_t)pos * TRACK_KP / TRACK_POS_MAX);
+    int16_t left = TRACK_BASE_SPEED + steer;
+    int16_t right = TRACK_BASE_SPEED - steer;
+
+    /* 限幅到 0~100，避免负值（倒退可能被判逆行） */
+    if (left < 0)
+        left = 0;
+    if (right < 0)
+        right = 0;
+    if (left > 100)
+        left = 100;
+    if (right > 100)
+        right = 100;
+
+    Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, left);
+    Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, right);
+}
 
 /* USER CODE END 4 */
 
