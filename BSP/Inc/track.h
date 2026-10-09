@@ -35,16 +35,16 @@
 #endif
 
 /* 传感器"压线"时的有效电平（指 CD4051 Out 脚上的电平）
- *   0 = 低电平有效：压到黑线时 Out 输出 0
+ *   0 = 低电平有效：压到黑线时 Out 输出 0（压线灯灭）
  *   1 = 高电平有效：压到黑线时 Out 输出 1（压线灯亮）
- * 已按实车确认：压线灯亮 = 1，灯灭 = 0 */
-#define TRACK_ACTIVE_LEVEL 1
+ * 已按实车确认：压线灯灭 = 输出 0 */
+#define TRACK_ACTIVE_LEVEL 0
 
 /* 位置方向反转：
  *   0 = 正常（通道 0 在车头最左，通道 N-1 在最右）
  *   1 = 传感器左右反装，偏差取反
- * 现象同样是"线在左车往右跑"：若改 TRACK_ACTIVE_LEVEL 无效，改这里 */
-#define TRACK_INVERT 0
+ * 已按实车确认：通道左右反了（转向方向反），设 1 */
+#define TRACK_INVERT 1
 
 /* 位置偏差满量程：Track_GetPosition() 返回 -TRACK_POS_MAX ~ +TRACK_POS_MAX */
 #define TRACK_POS_MAX 1000
