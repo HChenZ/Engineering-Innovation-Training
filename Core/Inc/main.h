@@ -57,6 +57,40 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LED_Pin GPIO_PIN_13
+#define LED_GPIO_Port GPIOC
+#define PWMA_Pin GPIO_PIN_0
+#define PWMA_GPIO_Port GPIOA
+#define PWMB_Pin GPIO_PIN_1
+#define PWMB_GPIO_Port GPIOA
+#define Encoder_RightA_Pin GPIO_PIN_6
+#define Encoder_RightA_GPIO_Port GPIOA
+#define Encoder_RightB_Pin GPIO_PIN_7
+#define Encoder_RightB_GPIO_Port GPIOA
+#define Motor_BIN2_Pin GPIO_PIN_0
+#define Motor_BIN2_GPIO_Port GPIOB
+#define Motor_BIN1_Pin GPIO_PIN_1
+#define Motor_BIN1_GPIO_Port GPIOB
+#define Motor_AIN2_Pin GPIO_PIN_10
+#define Motor_AIN2_GPIO_Port GPIOB
+#define Motor_AIN1_Pin GPIO_PIN_11
+#define Motor_AIN1_GPIO_Port GPIOB
+#define Track_AD2_Pin GPIO_PIN_12
+#define Track_AD2_GPIO_Port GPIOB
+#define Track_AD1_Pin GPIO_PIN_13
+#define Track_AD1_GPIO_Port GPIOB
+#define Track_AD0_Pin GPIO_PIN_14
+#define Track_AD0_GPIO_Port GPIOB
+#define Track_Out_Pin GPIO_PIN_15
+#define Track_Out_GPIO_Port GPIOB
+#define OLED_SCL_Pin GPIO_PIN_12
+#define OLED_SCL_GPIO_Port GPIOA
+#define OLED_SDA_Pin GPIO_PIN_5
+#define OLED_SDA_GPIO_Port GPIOB
+#define Encoder_LeftA_Pin GPIO_PIN_6
+#define Encoder_LeftA_GPIO_Port GPIOB
+#define Encoder_LeftB_Pin GPIO_PIN_7
+#define Encoder_LeftB_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

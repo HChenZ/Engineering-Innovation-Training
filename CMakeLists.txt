@@ -43,13 +43,16 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add sources to executable
+aux_source_directory(BSP/Src BSP_SOURCE)
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    ${BSP_SOURCE}
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    BSP/Inc
 )
 
 # Add project symbols (macros)
