@@ -45,17 +45,13 @@
 #define TRACK_SPEED_NORMAL 25   /* 正常循迹目标速度 */
 #define TRACK_SPEED_SLOW   10   /* 避障减速目标速度 */
 
-/* 电机一致性测试模式：
- *   1 = 不循迹、不避障，左右轮速度环各自闭环到相同目标速度，
- *       用于排查电机硬件差异（看左右 PWM 是否一致）；测完改回 0 */
-#define MOTOR_TEST_MODE 0
 /* 测试目标速度（脉冲/10ms，约 2 圈/秒） */
 #define MOTOR_TEST_SPEED 20
 
-/* 编码器方向修正：前进时该轮速度应为正。
- * 若某轮编码器方向反了（速度闭环下该轮会飞转），把对应项设为 1 取反 */
-#define ENC_LEFT_INVERT  1   /* 左轮已确认反了 */
-#define ENC_RIGHT_INVERT 0
+/* 超声波调试显示：1 = OLED 显示左右测距（cm）+ 原始回波宽度（µs），
+ * 方便核对读数是否正常；调试完改 0 即可关闭（关闭后不占用主循环时间） */
+#define OLED_ULTRASONIC_DEBUG 1
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -87,15 +83,44 @@ volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
 volatile uint8_t g_stop = 0;          /* 终止停车标志：8 路全黑触发，置 1 后永久停止 */
 volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
 
+/* 避障接管（主循环写，TIM1 中断读）：
+ * g_avoid_drive=1 时中断跳过循迹位置环，直接用 g_avoid_vl/vr 作为
+ * 左右轮目标速度（弧线由速度环闭环执行，转弯半径不受电池电压影响） */
+volatile uint8_t g_avoid_drive = 0;
+volatile int16_t g_avoid_vl = 0;
+volatile int16_t g_avoid_vr = 0;
+
 /* 调试观测值（中断写，主循环读，OLED 显示用） */
 volatile int16_t g_speed_l = 0;  /* 左轮实测速度（脉冲/10ms） */
 volatile int16_t g_speed_r = 0;  /* 右轮实测速度（脉冲/10ms） */
 volatile int16_t g_pwm_l = 0;    /* 左轮 PWM 输出（-100~100） */
 volatile int16_t g_pwm_r = 0;    /* 右轮 PWM 输出（-100~100） */
 
-#if MOTOR_TEST_MODE
-static uint32_t disp_tick = 0;   /* OLED 显示刷新计时（仅测试模式用） */
+#if OLED_ULTRASONIC_DEBUG
+/* 超声波调试显示：一页显示 L/R 两路的 距离(cm) + 原始回波宽度(µs)。
+ * 距离显示 "---" = 无目标/-1；宽度是硬件捕获的 Echo 高电平时间，
+ * 可以和尺子对照标定（1cm ≈ 58µs，超量程的 66ms 脉冲会显示 65535） */
+static void OLED_ShowSonarLine(uint8_t y, uint8_t tag, int16_t cm, uint16_t width_us)
+{
+    OLED_ClearCharArea(0, y, 21); /* 先清整行，避免新旧数字叠在一起 */
+
+    OLED_ShowChar(0, y, tag, 8);
+    OLED_ShowChar(6, y, ':', 8);
+
+    if (cm < 0)
+        OLED_ShowString(12, y, (uint8_t *)"---", 8);
+    else
+        OLED_ShowNum(12, y, (uint32_t)cm, 3, 8);
+
+    OLED_ShowString(30, y, (uint8_t *)"cm", 8);
+    OLED_ShowString(54, y, (uint8_t *)"W:", 8);
+    OLED_ShowNum(66, y, (uint32_t)width_us, 5, 8);
+    OLED_ShowString(96, y, (uint8_t *)"us", 8);
+}
+
+static uint32_t s_oled_tick = 0; /* 显示刷新计时 */
 #endif
+
 /* USER CODE END 0 */
 
 /**
@@ -134,12 +159,22 @@ int main(void)
   Motor_Init();
   Encoder_Init();
   OLED_Init();
+
+#if OLED_ULTRASONIC_DEBUG
+  /* 标题只画一次，下面几行循环里局部刷新 */
+  OLED_Clear();
+  OLED_ShowString(0, 0, (uint8_t *)"SONAR DEBUG", 8);
+#endif
+
   Avoid_Init();
   Track_Init();
 
   /* TIM1 定时中断：10ms PID 控制周期 */
   MX_TIM1_Init();
   HAL_TIM_Base_Start_IT(&htim1);
+
+  /* 超声波 Echo 输入捕获（TIM1 CH3/CH4）：必须在 TIM1 启动之后使能 */
+  HCSR04_Start();
 
   /* PID 参数初始化（需实车调，见各环注释） */
   PID_Init(&pid_pos,     0.05f, 0.0f, 0.0f, 500.0f, -30.0f, 30.0f);   /* 位置环：纯 P，限幅防边缘掉头 */
@@ -158,68 +193,87 @@ int main(void)
     if (g_stop)
     {
         /* 终止停车已触发：电机保持刹车状态，不再做任何控制 */
+#if OLED_ULTRASONIC_DEBUG
+        /* 把停车原因显示出来：看到 STOP 说明是 8 路全黑的停车保护触发了 */
+        static uint8_t stop_shown = 0U;
+        if (!stop_shown)
+        {
+            stop_shown = 1U;
+            OLED_ClearCharArea(0, 6, 21);
+            OLED_ShowString(0, 6, (uint8_t *)"STOP ALLBLACK", 8);
+        }
+#endif
         HAL_Delay(10);
         continue;
     }
 
-#if MOTOR_TEST_MODE
-    /* ----- 电机一致性测试：固定目标速度，左右轮速度环各自闭环 ----- */
-    g_track_enable = 1;
-    g_target_speed = MOTOR_TEST_SPEED;
-#else
-    /* ----- 超声波避障决策（循迹 PID 控制在 TIM1 中断里跑） ----- */
+    /* ----- 避障决策（非阻塞；循迹 PID 和避障速度环都在 TIM1 中断里跑） ----- */
     switch (Avoid_Update())
     {
-    case AVOID_FOLLOW: /* 正常循迹 */
+    case AVOID_AVOIDING: /* 绕行中：右前/左前弧线交给速度环执行 */
         g_track_enable = 1;
-        g_target_speed = TRACK_SPEED_NORMAL;
+        g_avoid_vl = Avoid_GetDriveL();
+        g_avoid_vr = Avoid_GetDriveR();
+        g_avoid_drive = 1;
         break;
 
     case AVOID_SLOW: /* 循迹但减速 */
+        g_avoid_drive = 0;
         g_track_enable = 1;
         g_target_speed = TRACK_SPEED_SLOW;
         break;
 
-    case AVOID_BRAKE: /* 立即刹车 */
-        g_track_enable = 0;
-        Motor_BrakeAll();
-        break;
-
-    case AVOID_TURN_LEFT: /* 原地左转 */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 40);
-        break;
-
-    case AVOID_TURN_RIGHT: /* 原地右转 */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, 40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
-        break;
-
-    case AVOID_BACK: /* 后退（默认关掉了，一般不会走到） */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
+    case AVOID_FOLLOW: /* 正常循迹 */
+    default:
+        g_avoid_drive = 0;
+        g_track_enable = 1;
+        g_target_speed = TRACK_SPEED_NORMAL;
         break;
     }
-#endif  /* MOTOR_TEST_MODE */
 
-#if MOTOR_TEST_MODE
-    /* OLED 显示左右轮速度与 PWM（200ms 刷新，避免闪烁） */
-    if (HAL_GetTick() - disp_tick >= 200)
+#if OLED_ULTRASONIC_DEBUG
+    /* 超声波调试显示：每 200ms 刷新一次（软件 I2C 阻塞约几毫秒，仅调试用） */
+    if ((HAL_GetTick() - s_oled_tick) >= 200U)
     {
-        disp_tick = HAL_GetTick();
-        OLED_Clear();
-        OLED_ShowString(0, 0, (uint8_t *)"L", 16);
-        OLED_ShowSignedNum(16, 0, g_speed_l, 4, 16);
-        OLED_ShowSignedNum(72, 0, g_pwm_l, 4, 16);
-        OLED_ShowString(0, 2, (uint8_t *)"R", 16);
-        OLED_ShowSignedNum(16, 2, g_speed_r, 4, 16);
-        OLED_ShowSignedNum(72, 2, g_pwm_r, 4, 16);
+        int16_t front;
+        uint8_t act_char;
+
+        s_oled_tick = HAL_GetTick();
+
+        OLED_ShowSonarLine(1, 'L', HCSR04_LastCm(HCSR04_LEFT),
+                           HCSR04_LastWidthUs(HCSR04_LEFT));
+        OLED_ShowSonarLine(2, 'R', HCSR04_LastCm(HCSR04_RIGHT),
+                           HCSR04_LastWidthUs(HCSR04_RIGHT));
+
+        /* 第三行：前方最小值 + 避障动作（F=循迹 S=减速 A=绕行） */
+        switch (Avoid_GetAction())
+        {
+        case AVOID_AVOIDING: act_char = 'A'; break;
+        case AVOID_SLOW:     act_char = 'S'; break;
+        default:             act_char = 'F'; break;
+        }
+
+        front = Avoid_GetFrontCm();
+        OLED_ClearCharArea(0, 4, 21);
+        OLED_ShowString(0, 4, (uint8_t *)"F:", 8);
+        if (front < 0)
+            OLED_ShowString(12, 4, (uint8_t *)"---", 8);
+        else
+            OLED_ShowNum(12, 4, (uint32_t)front, 3, 8);
+        OLED_ShowString(30, 4, (uint8_t *)"cm", 8);
+        OLED_ShowString(54, 4, (uint8_t *)"A:", 8);
+        OLED_ShowChar(66, 4, act_char, 8);
+
+        /* 第五行：避障内部阶段号（调试）
+         * 0=循迹 1=右让 2=左让 3=右让后回线 4=左让后回线 5=冷却 */
+        OLED_ClearCharArea(0, 5, 21);
+        OLED_ShowString(0, 5, (uint8_t *)"P:", 8);
+        OLED_ShowChar(12, 5, (uint8_t)('0' + Avoid_GetState()), 8);
     }
 #endif
 
+    /* 主循环节拍（5ms）：超声波按 40ms 轮流采样、避障状态按毫秒计时，
+     * 各任务用自己的时间片，不用把整个循环拖满 */
     HAL_Delay(5);
   }
   /* USER CODE END 3 */
@@ -284,8 +338,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (!g_track_enable)
         return;  /* 避障接管，中断不控电机 */
 
-    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车 */
-    if (Track_AllBlack())
+    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车。
+     * 只在非避障时检测：绕行过程中车身会横扫黑线，出现"黑线横在整排
+     * 传感器下面"的姿态会被误判成终点线，一旦误停就是永久刹车 */
+    if ((g_avoid_drive == 0U) && Track_AllBlack())
     {
         g_stop = 1;
         g_track_enable = 0;
@@ -294,30 +350,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 
     /* 1. 读编码器速度（脉冲/10ms，带符号） */
-    int16_t vL = Encoder_GetSpeed(&encoder_left);
+    int16_t vL = -Encoder_GetSpeed(&encoder_left);
     int16_t vR = Encoder_GetSpeed(&encoder_right);
 
-#if ENC_LEFT_INVERT
-    vL = -vL;  /* 左轮编码器方向修正 */
-#endif
-#if ENC_RIGHT_INVERT
-    vR = -vR;  /* 右轮编码器方向修正 */
-#endif
+    float vL_target;
+    float vR_target;
 
-#if MOTOR_TEST_MODE
-    /* 测试模式：不循迹，位置环输出置 0，只跑左右速度环 */
-    float turn = 0.0f;
-#else
-    /* 2. 读循迹位置偏差（-1000 ~ +1000） */
-    int16_t pos = Track_GetPosition();
+    if (g_avoid_drive)
+    {
+        /* 避障接管：跳过位置环，直接用避障给的左右轮目标速度 */
+        vL_target = (float)g_avoid_vl;
+        vR_target = (float)g_avoid_vr;
+    }
+    else
+    {
+        /* 2. 读循迹位置偏差（-1000 ~ +1000） */
+        int16_t pos = Track_GetPosition();
 
-    /* 3. 位置环：偏差 -> 转向速度差（脉冲/10ms） */
-    float turn = PID_Update(&pid_pos, (float)pos);
-#endif
+        /* 3. 位置环：偏差 -> 转向速度差（脉冲/10ms） */
+        float turn = PID_Update(&pid_pos, (float)pos);
 
-    /* 4. 目标速度 = 直行速度 ± 转向（线偏右则左快右慢，向右纠偏） */
-    float vL_target = (float)g_target_speed + turn;
-    float vR_target = (float)g_target_speed - turn;
+        /* 4. 目标速度 = 直行速度 ± 转向（线偏右则左快右慢，向右纠偏） */
+        vL_target = (float)g_target_speed + turn;
+        vR_target = (float)g_target_speed - turn;
+    }
 
     /* 5. 速度环：目标 vs 实测 -> PWM 占空比 */
     float pwm_l = PID_Update(&pid_speed_l, vL_target - (float)vL);

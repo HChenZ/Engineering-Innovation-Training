@@ -1,248 +1,268 @@
 #include "avoid.h"
+#include "track.h"
 
-/* 避障状态
- *   FOLLOW -> 正常循迹
- *   BRAKE  -> 先停稳，停稳后再决定绕行方向
- *   TURN   -> 原地转向保持中
- *   BACK   -> 后退保持中（默认不启用，见 avoid.h 的 AVOID_ALLOW_BACK） */
-typedef enum
-{
-    AVOID_STATE_FOLLOW = 0,
-    AVOID_STATE_BRAKE,
-    AVOID_STATE_TURN,
-    AVOID_STATE_BACK
-} AvoidState;
+/* ============================================================================
+ * 避障状态机：前进式 S 形绕行，见 avoid.h 顶部的流程说明
+ *
+ * FOLLOW ──近障碍确认──> DODGE（向外让，固定时长）
+ *   ▲                      │
+ *   │                      ▼
+ * COOLDOWN <──见黑线── RETURN（回线，直到见黑线）
+ * ========================================================================== */
 
-static AvoidState state = AVOID_STATE_FOLLOW;
-static AvoidAction action = AVOID_FOLLOW;
+/* 状态 */
+#define AVOID_ST_FOLLOW   0U /* 正常循迹（接近确认也在这一步做） */
+#define AVOID_ST_DODGE_R  1U /* 障碍偏左：右前弧（第一阶段） */
+#define AVOID_ST_DODGE_L  2U /* 障碍偏右：左前弧（第一阶段） */
+#define AVOID_ST_RETURN_R 3U /* 右让之后：左前弧回线（第二阶段） */
+#define AVOID_ST_RETURN_L 4U /* 左让之后：右前弧回线（第二阶段） */
+#define AVOID_ST_COOLDOWN 5U /* 已交还循迹，暂时不再触发 */
 
-static uint32_t state_tick = 0;  /* 状态切换时刻 */
-static uint32_t sample_tick = 0; /* 上次采样时刻 */
-static uint8_t sample_next = 0;  /* 下一次测哪一路 */
+static uint8_t  s_state = AVOID_ST_FOLLOW;
+static uint32_t s_state_tick = 0U;   /* 进入当前状态的时刻 */
+static uint32_t s_sample_tick = 0U;  /* 上次触发采样的时刻 */
+static uint8_t  s_sample_next = 0U;  /* 下一路触发左(0)/右(1) */
+static uint32_t s_near_tick = 0U;    /* 接近状态起始时刻（触发确认用） */
+static uint8_t  s_near_active = 0U;
+static uint8_t  s_line_cnt = 0U;     /* 回线阶段"见线"连续确认计数 */
 
-/* 取距离，-1（无回波）当作很远 */
-static int16_t Avoid_Cm(HCSR04_ID id)
+static int16_t  s_drive_l = 0;       /* 绕行时左右轮目标速度（脉冲/10ms） */
+static int16_t  s_drive_r = 0;
+static AvoidAction s_action = AVOID_FOLLOW;
+
+/* 取距离：-1（无回波）当作很远 */
+static int16_t Avoid_DistCm(HCSR04_ID id)
 {
     const int16_t cm = HCSR04_LastCm(id);
 
     return (cm < 0) ? 999 : cm;
 }
 
-/* 正前方距离（原始值，-1 表示相关探头都没有回波）
- *
- * 左右两路都算进来，再叠加可选的中间探头，取最小值：
- * 这样即使中间探头忘了插（读数恒为 -1），逻辑依然由左右两路兜底，
- * 不会出现"正前方永远判定通畅"的哑火。 */
-static int16_t Avoid_FrontRawCm(void)
+/* 是否见到黑线。
+ * 直接读 8 路位图，不用 Track_IsLost()——那个标志只在 Track_GetPosition()
+ * 里刷新，而避障期间位置环不在跑，读到的会是启动避障之前的旧值。
+ * 主循环读传感器与 TIM1 中断里的 Track_AllBlack() 共用一个模拟开关，
+ * 单次读有可能撞上中断而失真，所以调用方要用连续两次确认。 */
+static uint8_t Avoid_LineSeen(void)
 {
-    int16_t front = -1;
-    int16_t cm;
-
-    cm = HCSR04_LastCm(HCSR04_LEFT);
-    if (cm > 0 && (front < 0 || cm < front))
-        front = cm;
-
-    cm = HCSR04_LastCm(HCSR04_RIGHT);
-    if (cm > 0 && (front < 0 || cm < front))
-        front = cm;
-
-#if AVOID_USE_CENTER
-    cm = HCSR04_LastCm(HCSR04_CENTER);
-    if (cm > 0 && (front < 0 || cm < front))
-        front = cm;
-#endif
-
-    return front;
-}
-
-/* 正前方距离（-1 换成 999，便于比较） */
-static int16_t Avoid_FrontCm(void)
-{
-    const int16_t cm = Avoid_FrontRawCm();
-
-    return (cm < 0) ? 999 : cm;
+    return (Track_ReadAll() != 0U) ? 1U : 0U;
 }
 
 void Avoid_Init(void)
 {
     HCSR04_Init();
 
-    state = AVOID_STATE_FOLLOW;
-    action = AVOID_FOLLOW;
-    state_tick = HAL_GetTick();
-    sample_tick = HAL_GetTick();
-    sample_next = 0;
+    s_state = AVOID_ST_FOLLOW;
+    s_state_tick = HAL_GetTick();
+    s_sample_tick = HAL_GetTick();
+    s_sample_next = 0U;
+    s_near_active = 0U;
+    s_line_cnt = 0U;
+    s_drive_l = 0;
+    s_drive_r = 0;
+    s_action = AVOID_FOLLOW;
 }
 
-/* 轮流采样。
- * 每 AVOID_SAMPLE_MS 只测一路，单个探头最坏阻塞 8ms，
- * 主循环不会被长时间占住。 */
+/* 轮流触发两路采样（非阻塞）。
+ * 只有两路都空闲时才触发下一路：等这一路测完再发下一路，
+ * 避免两个探头同时工作、互相收到对方的波（串扰） */
 static void Avoid_Sample(void)
 {
-    if ((HAL_GetTick() - sample_tick) < AVOID_SAMPLE_MS)
+    if ((HAL_GetTick() - s_sample_tick) < AVOID_SAMPLE_MS)
         return;
 
-    sample_tick = HAL_GetTick();
+    if (HCSR04_IsBusy(HCSR04_LEFT) || HCSR04_IsBusy(HCSR04_RIGHT))
+        return;
 
-#if AVOID_USE_CENTER
-    switch (sample_next)
+    s_sample_tick = HAL_GetTick();
+
+    if (s_sample_next == 0U)
     {
-    case 0:
-        HCSR04_ReadCm(HCSR04_CENTER);
-        sample_next = 1;
-        break;
-
-    case 1:
-        HCSR04_ReadCm(HCSR04_LEFT);
-        sample_next = 2;
-        break;
-
-    default:
-        HCSR04_ReadCm(HCSR04_RIGHT);
-        sample_next = 0;
-        break;
-    }
-#else
-    if (sample_next == 0)
-    {
-        HCSR04_ReadCm(HCSR04_LEFT);
-        sample_next = 1;
+        HCSR04_Trigger(HCSR04_LEFT);
+        s_sample_next = 1U;
     }
     else
     {
-        HCSR04_ReadCm(HCSR04_RIGHT);
-        sample_next = 0;
+        HCSR04_Trigger(HCSR04_RIGHT);
+        s_sample_next = 0U;
     }
-#endif
 }
 
-/* 往更空的一侧原地转向（原地转不会触发"逆行"判罚） */
-static AvoidAction Avoid_StartTurn(void)
+/* 启动绕行：按距离判断障碍在左还是右，往更空的一侧让 */
+static void Avoid_StartDodge(void)
 {
-    const int16_t left = Avoid_Cm(HCSR04_LEFT);
-    const int16_t right = Avoid_Cm(HCSR04_RIGHT);
+    s_state_tick = HAL_GetTick();
+    s_near_active = 0U;
 
-    state = AVOID_STATE_TURN;
-    state_tick = HAL_GetTick();
-    action = (left > right) ? AVOID_TURN_LEFT : AVOID_TURN_RIGHT;
-
-    return action;
-}
-
-/* 前方已经进入危险距离，选一个"逃出去"的动作 */
-static AvoidAction Avoid_Escape(void)
-{
-#if AVOID_ALLOW_BACK
-    const int16_t left = Avoid_Cm(HCSR04_LEFT);
-    const int16_t right = Avoid_Cm(HCSR04_RIGHT);
-
-    /* 只有允许后退时，两侧都堵才倒车 */
-    if (left <= AVOID_STOP_CM && right <= AVOID_STOP_CM)
+    if (Avoid_DistCm(HCSR04_LEFT) <= Avoid_DistCm(HCSR04_RIGHT))
     {
-        state = AVOID_STATE_BACK;
-        state_tick = HAL_GetTick();
-        action = AVOID_BACK;
-        return action;
+        /* 左侧更近 → 障碍偏左 → 先向右前方绕 */
+        s_state = AVOID_ST_DODGE_R;
+        s_drive_l = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
+        s_drive_r = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
     }
-#endif
-
-    /* 默认策略：后退有被判"逆行"的风险，所以一律改成原地转向 */
-    return Avoid_StartTurn();
-}
-
-/* 刹车结束后决定下一步：恢复循迹还是绕行 */
-static AvoidAction Avoid_AfterBrake(void)
-{
-    if (Avoid_FrontCm() > AVOID_STOP_CM)
+    else
     {
-        state = AVOID_STATE_FOLLOW;
-        state_tick = HAL_GetTick();
-        action = AVOID_FOLLOW;
-        return action;
+        /* 右侧更近 → 障碍偏右 → 先向左前方绕 */
+        s_state = AVOID_ST_DODGE_L;
+        s_drive_l = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
+        s_drive_r = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
     }
 
-    return Avoid_Escape();
-}
-
-/* 正常状态的判断 */
-static AvoidAction Avoid_Decide(void)
-{
-    const int16_t front = Avoid_FrontCm();
-
-    switch (state)
-    {
-    case AVOID_STATE_TURN:
-        if ((HAL_GetTick() - state_tick) < AVOID_TURN_MS)
-            return action;
-
-        state = AVOID_STATE_FOLLOW;
-        state_tick = HAL_GetTick();
-        break;
-
-    case AVOID_STATE_BACK:
-#if AVOID_ALLOW_BACK
-        if ((HAL_GetTick() - state_tick) < AVOID_BACK_MS)
-            return AVOID_BACK;
-
-        /* 退完先停一下再看，避免刚退完就贴上去 */
-        state = AVOID_STATE_BRAKE;
-        state_tick = HAL_GetTick();
-        action = AVOID_BRAKE;
-        return action;
-#else
-        state = AVOID_STATE_FOLLOW;
-        state_tick = HAL_GetTick();
-        break;
-#endif
-
-    default:
-        break;
-    }
-
-    /* 前方安全：继续循迹，靠近了就先减速 */
-    if (front > AVOID_STOP_CM)
-    {
-        if (front <= AVOID_SLOW_CM)
-            return AVOID_SLOW;
-
-        return AVOID_FOLLOW;
-    }
-
-    /* 前方进入危险距离：先刹车停稳，停稳后再决定往哪边绕 */
-    state = AVOID_STATE_BRAKE;
-    state_tick = HAL_GetTick();
-    action = AVOID_BRAKE;
-    return action;
+    s_action = AVOID_AVOIDING;
 }
 
 AvoidAction Avoid_Update(void)
 {
+    const uint32_t now = HAL_GetTick();
+    int16_t fl, fr, fmin;
+
     Avoid_Sample();
 
-    if (state == AVOID_STATE_BRAKE)
+    fl = Avoid_DistCm(HCSR04_LEFT);
+    fr = Avoid_DistCm(HCSR04_RIGHT);
+    fmin = (fl < fr) ? fl : fr;
+
+    switch (s_state)
     {
-        /* 刹车时间到：用最新读数决定是恢复循迹还是转向 */
-        if ((HAL_GetTick() - state_tick) < AVOID_BRAKE_MS)
-            action = AVOID_BRAKE;
+    case AVOID_ST_DODGE_R: /* 第一阶段：右前弧，固定时长，不理会黑线 */
+        s_drive_l = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
+        s_drive_r = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
+        s_action = AVOID_AVOIDING;
+
+        if ((now - s_state_tick) >= AVOID_DODGE_MS)
+        {
+            /* 进入第二阶段：向左前方回线 */
+            s_state = AVOID_ST_RETURN_R;
+            s_state_tick = now;
+            s_line_cnt = 0U;
+        }
+        break;
+
+    case AVOID_ST_DODGE_L: /* 第一阶段镜像 */
+        s_drive_l = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
+        s_drive_r = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
+        s_action = AVOID_AVOIDING;
+
+        if ((now - s_state_tick) >= AVOID_DODGE_MS)
+        {
+            s_state = AVOID_ST_RETURN_L;
+            s_state_tick = now;
+            s_line_cnt = 0U;
+        }
+        break;
+
+    case AVOID_ST_RETURN_R: /* 第二阶段：左前弧回线 */
+    case AVOID_ST_RETURN_L:
+        if (s_state == AVOID_ST_RETURN_R)
+        {
+            s_drive_l = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
+            s_drive_r = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
+        }
         else
-            action = Avoid_AfterBrake();
-    }
-    else
-    {
-        action = Avoid_Decide();
+        {
+            s_drive_l = AVOID_DRIVE_SPEED + AVOID_ARC_DIFF;
+            s_drive_r = AVOID_DRIVE_SPEED - AVOID_ARC_DIFF;
+        }
+        s_action = AVOID_AVOIDING;
+
+        /* 交还条件：见到黑线（连续 2 次确认，滤掉与中断抢读的偶发失真），
+         * 且线已回到阵列中段（|偏差| <= AVOID_REJOIN_POS）——保证真正走完
+         * 一段回线弧、车头基本摆正，而不是刚碰到线沿就把控制权撒手 */
+        if (Avoid_LineSeen())
+        {
+            const int16_t pos = Track_GetPosition();
+
+            if ((pos >= -AVOID_REJOIN_POS) && (pos <= AVOID_REJOIN_POS))
+            {
+                if (++s_line_cnt >= 2U)
+                {
+                    s_line_cnt = 0U;
+                    s_state = AVOID_ST_COOLDOWN;
+                    s_state_tick = now;
+                    s_action = AVOID_FOLLOW; /* 本轮就交还，主循环随即清掉避障接管 */
+                }
+            }
+            else
+            {
+                s_line_cnt = 0U;
+            }
+        }
+        else
+        {
+            s_line_cnt = 0U;
+        }
+
+        /* 兜底：回线最长执行 AVOID_RETURN_MAX_MS，超时就交还循迹自己处理 */
+        if (((s_state == AVOID_ST_RETURN_R) || (s_state == AVOID_ST_RETURN_L)) &&
+            ((now - s_state_tick) >= AVOID_RETURN_MAX_MS))
+        {
+            s_line_cnt = 0U;
+            s_state = AVOID_ST_COOLDOWN;
+            s_state_tick = now;
+            s_action = AVOID_FOLLOW;
+        }
+        break;
+
+    case AVOID_ST_COOLDOWN: /* 已交还循迹：等障碍离开或超时再重新武装 */
+        s_action = AVOID_FOLLOW;
+
+        if (((fl > AVOID_CLEAR_CM) && (fr > AVOID_CLEAR_CM)) ||
+            ((now - s_state_tick) >= AVOID_COOLDOWN_MS))
+        {
+            s_state = AVOID_ST_FOLLOW;
+            s_near_active = 0U;
+        }
+        break;
+
+    case AVOID_ST_FOLLOW:
+    default:
+        /* 触发确认：接近状态持续 AVOID_CONFIRM_MS 才启动绕行 */
+        if (fmin < AVOID_STOP_CM)
+        {
+            if (!s_near_active)
+            {
+                s_near_active = 1U;
+                s_near_tick = now;
+            }
+            else if ((now - s_near_tick) >= AVOID_CONFIRM_MS)
+            {
+                Avoid_StartDodge();
+                break;
+            }
+        }
+        else
+        {
+            s_near_active = 0U;
+        }
+
+        s_action = (fmin < AVOID_SLOW_CM) ? AVOID_SLOW : AVOID_FOLLOW;
+        s_drive_l = 0;
+        s_drive_r = 0;
+        break;
     }
 
-    return action;
+    return s_action;
 }
 
 AvoidAction Avoid_GetAction(void)
 {
-    return action;
+    return s_action;
 }
 
-int16_t Avoid_GetFrontCm(void)
+uint8_t Avoid_GetState(void)
 {
-    return Avoid_FrontRawCm();
+    return s_state;
+}
+
+int16_t Avoid_GetDriveL(void)
+{
+    return s_drive_l;
+}
+
+int16_t Avoid_GetDriveR(void)
+{
+    return s_drive_r;
 }
 
 int16_t Avoid_GetLeftCm(void)
@@ -253,4 +273,19 @@ int16_t Avoid_GetLeftCm(void)
 int16_t Avoid_GetRightCm(void)
 {
     return HCSR04_LastCm(HCSR04_RIGHT);
+}
+
+int16_t Avoid_GetFrontCm(void)
+{
+    const int16_t l = HCSR04_LastCm(HCSR04_LEFT);
+    const int16_t r = HCSR04_LastCm(HCSR04_RIGHT);
+
+    if ((l < 0) && (r < 0))
+        return -1;
+    if (l < 0)
+        return r;
+    if (r < 0)
+        return l;
+
+    return (l < r) ? l : r;
 }
