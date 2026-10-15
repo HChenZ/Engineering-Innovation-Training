@@ -30,6 +30,8 @@
 #include "avoid.h"
 #include "track.h"
 #include "pid.h"
+#include "usart.h"
+#include "bluetooth.h"
 
 /* USER CODE END Includes */
 
@@ -52,6 +54,12 @@
 /* 测试目标速度（脉冲/10ms，约 2 圈/秒） */
 #define MOTOR_TEST_SPEED 20
 
+/* 蓝牙启动开关：
+ *   1 = 上电待机，必须收到蓝牙 start 才跑（调试/发车方便）
+ *   0 = 上电自动开跑，蓝牙只留着当紧急停车用
+ * （比赛规则写的是"全自动运行"，若裁判对手机发车有意见就改成 0） */
+#define BT_START_GATE 1
+
 /* 编码器方向修正：前进时该轮速度应为正。
  * 若某轮编码器方向反了（速度闭环下该轮会飞转），把对应项设为 1 取反 */
 #define ENC_LEFT_INVERT  1   /* 左轮已确认反了 */
@@ -73,6 +81,9 @@
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
+/* OLED 状态显示（启动/停车时各刷一次） */
+static void Car_ShowState(uint8_t running, const char *cmd_text);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -84,8 +95,13 @@ static PID_t pid_speed_r;  /* 右轮速度环 */
 
 /* 控制状态（主循环写，TIM1 中断读，volatile 保证可见性） */
 volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
-volatile uint8_t g_stop = 0;          /* 终止停车标志：8 路全黑触发，置 1 后永久停止 */
+volatile uint8_t g_stop = 0;          /* 终止停车标志：8 路全黑触发，置 1 后停车，蓝牙再发 start 才解除 */
 volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
+
+/* 蓝牙启动控制（只在主循环里用）
+ *   0 = 待机：上电默认，电机不动，等手机 APP 发 start
+ *   1 = 运行：循迹 + 避障都打开 */
+static uint8_t g_run = 0;
 
 /* 调试观测值（中断写，主循环读，OLED 显示用） */
 volatile int16_t g_speed_l = 0;  /* 左轮实测速度（脉冲/10ms） */
@@ -131,11 +147,27 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+  /* 蓝牙模块（USART2，9600）：先配串口，再开中断接收 */
+  MX_USART2_UART_Init();
+  Bluetooth_Init();
+
   Motor_Init();
   Encoder_Init();
   OLED_Init();
   Avoid_Init();
   Track_Init();
+
+#if BT_START_GATE
+  /* 上电默认停车待机，等蓝牙 start；LED 灭 = 没在跑 */
+  Motor_StopAll();
+  LED_Off();
+  Car_ShowState(0, "WAIT CMD");
+#else
+  /* 不用蓝牙发车：上电直接开跑（蓝牙仍可用来停车） */
+  g_run = 1;
+  LED_On();
+  Car_ShowState(1, "AUTO RUN");
+#endif
 
   /* TIM1 定时中断：10ms PID 控制周期 */
   MX_TIM1_Init();
@@ -155,9 +187,59 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+    /* ----- 蓝牙命令：启动 / 停车 ----- */
+    BluetoothCmd bt_cmd;
+
+    while ((bt_cmd = Bluetooth_GetCommand()) != BT_CMD_NONE)
+    {
+        switch (bt_cmd)
+        {
+        case BT_CMD_START: /* 手机发 start / s / 1 */
+            if (!g_run)
+            {
+                g_stop = 0; /* 解除终点停车，可以重新起步 */
+                /* 清 PID 内部状态，避免上次跑完的积分残留让车"窜"一下 */
+                PID_Reset(&pid_pos);
+                PID_Reset(&pid_speed_l);
+                PID_Reset(&pid_speed_r);
+                g_track_enable = 1; /* 让 TIM1 中断立刻开始控制 */
+                g_run = 1;
+                LED_On();
+                Car_ShowState(1, "CMD:START");
+                Bluetooth_SendString("OK START\r\n");
+            }
+            else
+            {
+                Bluetooth_SendString("OK RUNNING\r\n"); /* 已经在跑，忽略重复命令 */
+            }
+            break;
+
+        case BT_CMD_STOP: /* 手机发 stop / p / 0 */
+            g_run = 0;
+            g_track_enable = 0;
+            Motor_BrakeAll();
+            LED_Off();
+            Car_ShowState(0, "CMD:STOP");
+            Bluetooth_SendString("OK STOP\r\n");
+            break;
+
+        default: /* BT_CMD_UNKNOWN */
+            Bluetooth_SendString("ERR\r\n");
+            break;
+        }
+    }
+
+    if (!g_run)
+    {
+        /* 还没收到启动命令：电机不动，守着蓝牙，5ms 一轮保证应答及时 */
+        HAL_Delay(5);
+        continue;
+    }
+
     if (g_stop)
     {
-        /* 终止停车已触发：电机保持刹车状态，不再做任何控制 */
+        /* 终止停车已触发：电机保持刹车状态，不再做任何控制
+         * （蓝牙重新下发 start 会清掉 g_stop） */
         HAL_Delay(10);
         continue;
     }
@@ -265,6 +347,22 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/* ==================== OLED 状态显示 ====================
+ * 只在收到蓝牙命令时刷一次，不占用主循环时间；
+ * LED 同步指示：亮 = 运行中，灭 = 待机/停车。 */
+static void Car_ShowState(uint8_t running, const char *cmd_text)
+{
+#if MOTOR_TEST_MODE
+    /* 测试模式：OLED 留给速度显示，不显示状态 */
+    (void)running;
+    (void)cmd_text;
+#else
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t *)(running ? "RUN" : "STOP"), 16);
+    OLED_ShowString(0, 2, (uint8_t *)cmd_text, 16);
+#endif
+}
+
 /* ==================== 循迹 PID 控制（TIM1 每 10ms 中断一次） ==================== */
 /* 双环结构：
  *   外环（位置环）：循迹偏差 pos -> 转向速度差 turn

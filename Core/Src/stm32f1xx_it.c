@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tim.h"
+#include "usart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -212,5 +213,15 @@ void TIM1_UP_IRQHandler(void)
   /* USER CODE BEGIN TIM1_UP_IRQn 1 */
 
   /* USER CODE END TIM1_UP_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART2 global interrupt (蓝牙模块接收).
+  * @note  USART2 的中断使能放在 BSP/Src/bluetooth.c 的 Bluetooth_Init() 里，
+  *        不依赖 CubeMX 的 NVIC 勾选；接收回调和错误恢复也在 bluetooth.c。
+  */
+void USART2_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart2);
 }
 /* USER CODE END 1 */
