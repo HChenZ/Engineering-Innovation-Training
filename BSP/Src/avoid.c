@@ -74,10 +74,10 @@ void Avoid_Init(void)
     sample_next = 0;
 }
 
-/* 轮流采样。
+/* 轮流采样（对外公开：停车/待机时由主循环直接调用，保持距离数据新鲜）。
  * 每 AVOID_SAMPLE_MS 只测一路，单个探头最坏阻塞 8ms，
  * 主循环不会被长时间占住。 */
-static void Avoid_Sample(void)
+void Avoid_Sample(void)
 {
     if ((HAL_GetTick() - sample_tick) < AVOID_SAMPLE_MS)
         return;

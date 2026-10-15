@@ -17,7 +17,9 @@
 //
 // 用法：
 //   setup 里调用 Avoid_Init()
-//   主循环里 switch (Avoid_Update()) 分派动作即可
+//   跑起来的时候：主循环里 switch (Avoid_Update()) 分派动作即可
+//   停车/待机（不打算跑）的时候：每轮调用 Avoid_Sample()，
+//   只测距不做动作，保证发车时用的距离是最新的
 
 #include "main.h"
 #include "hcsr04.h"
@@ -90,6 +92,13 @@ AvoidAction Avoid_Update(void);
 
 /* 取当前建议动作，不刷新状态 */
 AvoidAction Avoid_GetAction(void);
+
+/* 只做测距采样：不决策、不下发任何动作、不改状态机。
+ * 停车/待机时在主循环里调用，让距离数据保持新鲜，
+ * 这样发车（start）时第一次决策用的是当前距离，而不是停车前的旧值。
+ * 采样节奏与 Avoid_Update() 内部一致：每 AVOID_SAMPLE_MS 测一路，
+ * 左右轮流，单次测量最坏阻塞 HCSR04_TIMEOUT_US（8ms）。 */
+void Avoid_Sample(void);
 
 /* 取最近一次的距离读数（厘米，-1 表示无回波）
  * 正前方距离：装了中间探头就用中间那路，没装就取左右两路中较近的一个 */

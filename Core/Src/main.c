@@ -81,8 +81,9 @@
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
-/* OLED 状态显示（启动/停车时各刷一次） */
-static void Car_ShowState(uint8_t running, const char *cmd_text);
+/* OLED 状态/距离显示 */
+static void Car_ShowAll(void);
+static void Car_ShowDistanceLine(uint8_t y, const char *tag, int16_t cm);
 
 /* USER CODE END PFP */
 
@@ -102,6 +103,20 @@ volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
  *   0 = 待机：上电默认，电机不动，等手机 APP 发 start
  *   1 = 运行：循迹 + 避障都打开 */
 static uint8_t g_run = 0;
+
+/* 终点线锁存：只有"离开过全黑区"之后，才重新允许 8 路全黑触发停车。
+ * 否则车停在终点线上再发 start，会被立刻又判成终点，车根本动不了。
+ * 只在 TIM1 中断里读写，主循环不碰。 */
+static uint8_t finish_armed = 0;
+
+/* OLED 显示（状态 + 两路超声波距离），每 CAR_DISP_MS 刷一遍：
+ *   页 0：状态（STOP / RUN / FINISH）
+ *   页 2：最近一条蓝牙命令
+ *   页 4/6：车头左侧 U4、右侧 U1 的实测距离（-1 显示 --）
+ * 待机/停车时距离也在实时刷新，发车前就能确认前方空间。 */
+#define CAR_DISP_MS 200U
+static uint32_t car_disp_tick = 0;
+static const char *car_cmd_text = "WAIT CMD";
 
 /* 调试观测值（中断写，主循环读，OLED 显示用） */
 volatile int16_t g_speed_l = 0;  /* 左轮实测速度（脉冲/10ms） */
@@ -143,6 +158,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
   MX_TIM3_Init();
@@ -158,19 +174,17 @@ int main(void)
   Track_Init();
 
 #if BT_START_GATE
-  /* 上电默认停车待机，等蓝牙 start；LED 灭 = 没在跑 */
+  /* 上电默认停车待机，等蓝牙 start（LED 灭 = 没在跑） */
   Motor_StopAll();
-  LED_Off();
-  Car_ShowState(0, "WAIT CMD");
+  Car_ShowAll(); /* 状态行 + 两路距离（还没测过，先显示 --） */
 #else
   /* 不用蓝牙发车：上电直接开跑（蓝牙仍可用来停车） */
   g_run = 1;
-  LED_On();
-  Car_ShowState(1, "AUTO RUN");
+  car_cmd_text = "AUTO RUN";
+  Car_ShowAll();
 #endif
 
   /* TIM1 定时中断：10ms PID 控制周期 */
-  MX_TIM1_Init();
   HAL_TIM_Base_Start_IT(&htim1);
 
   /* PID 参数初始化（需实车调，见各环注释） */
@@ -195,17 +209,22 @@ int main(void)
         switch (bt_cmd)
         {
         case BT_CMD_START: /* 手机发 start / s / 1 */
-            if (!g_run)
+            /* !g_run：待机中重新起步；g_stop：终点停车后想再跑一轮
+             * （终点停车时 g_run 仍然是 1，所以必须把 g_stop 也算进来，
+             *   否则这里会走下面的 "OK RUNNING" 分支，车永远起不来） */
+            if (!g_run || g_stop)
             {
-                g_stop = 0; /* 解除终点停车，可以重新起步 */
+                g_stop = 0; /* 解除终点停车 */
                 /* 清 PID 内部状态，避免上次跑完的积分残留让车"窜"一下 */
                 PID_Reset(&pid_pos);
                 PID_Reset(&pid_speed_l);
                 PID_Reset(&pid_speed_r);
-                g_track_enable = 1; /* 让 TIM1 中断立刻开始控制 */
+                /* 这里不直接使能电机：本轮往下就会调用 Avoid_Update()，
+                 * 先用最新距离判一次——车头已经贴障碍物就先刹车/绕行，
+                 * 不会带着速度往前冲（停车期间距离一直在更新） */
                 g_run = 1;
-                LED_On();
-                Car_ShowState(1, "CMD:START");
+                car_cmd_text = "CMD:START";
+                Car_ShowAll(); /* 立刻刷新状态行 / LED */
                 Bluetooth_SendString("OK START\r\n");
             }
             else
@@ -218,8 +237,8 @@ int main(void)
             g_run = 0;
             g_track_enable = 0;
             Motor_BrakeAll();
-            LED_Off();
-            Car_ShowState(0, "CMD:STOP");
+            car_cmd_text = "CMD:STOP";
+            Car_ShowAll();
             Bluetooth_SendString("OK STOP\r\n");
             break;
 
@@ -229,9 +248,18 @@ int main(void)
         }
     }
 
+    /* ----- OLED 状态/距离显示：每 CAR_DISP_MS 刷一遍 ----- */
+    if (HAL_GetTick() - car_disp_tick >= CAR_DISP_MS)
+    {
+        car_disp_tick = HAL_GetTick();
+        Car_ShowAll();
+    }
+
     if (!g_run)
     {
-        /* 还没收到启动命令：电机不动，守着蓝牙，5ms 一轮保证应答及时 */
+        /* 还没收到启动命令：电机不动，但超声波继续测距（只测不做动作），
+         * 这样发车时的第一帧决策用的是当前距离，而不是停车前的旧值 */
+        Avoid_Sample();
         HAL_Delay(5);
         continue;
     }
@@ -240,6 +268,7 @@ int main(void)
     {
         /* 终止停车已触发：电机保持刹车状态，不再做任何控制
          * （蓝牙重新下发 start 会清掉 g_stop） */
+        Avoid_Sample(); /* 同样保持测距，方便观察/重启 */
         HAL_Delay(10);
         continue;
     }
@@ -293,12 +322,12 @@ int main(void)
     {
         disp_tick = HAL_GetTick();
         OLED_Clear();
-        OLED_ShowString(0, 0, (uint8_t *)"L", 16);
-        OLED_ShowSignedNum(16, 0, g_speed_l, 4, 16);
-        OLED_ShowSignedNum(72, 0, g_pwm_l, 4, 16);
-        OLED_ShowString(0, 2, (uint8_t *)"R", 16);
-        OLED_ShowSignedNum(16, 2, g_speed_r, 4, 16);
-        OLED_ShowSignedNum(72, 2, g_pwm_r, 4, 16);
+        OLED_ShowString(0, 0, (uint8_t *)"L", 8);
+        OLED_ShowSignedNum(16, 0, g_speed_l, 4, 8);
+        OLED_ShowSignedNum(72, 0, g_pwm_l, 4, 8);
+        OLED_ShowString(0, 2, (uint8_t *)"R", 8);
+        OLED_ShowSignedNum(16, 2, g_speed_r, 4, 8);
+        OLED_ShowSignedNum(72, 2, g_pwm_r, 4, 8);
     }
 #endif
 
@@ -347,19 +376,53 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* ==================== OLED 状态显示 ====================
- * 只在收到蓝牙命令时刷一次，不占用主循环时间；
- * LED 同步指示：亮 = 运行中，灭 = 待机/停车。 */
-static void Car_ShowState(uint8_t running, const char *cmd_text)
+/* ==================== OLED 状态/距离显示 ====================
+ * 页 0：状态（STOP / RUN / FINISH）
+ * 页 2：最近一条蓝牙命令
+ * 页 4/6：左（U4）/ 右（U1）超声波距离，-1 显示 --
+ * LED 同步：跑着才亮（终点停车时中断把 g_stop 置 1，这里会自动灭）。 */
+
+/* 画一行距离：标签 + 3 位数字 + cm */
+static void Car_ShowDistanceLine(uint8_t y, const char *tag, int16_t cm)
 {
+    OLED_ShowString(0, y, (uint8_t *)tag, 8);
+
+    if (cm < 0)
+        OLED_ShowString(12, y, (uint8_t *)"-- ", 8); /* 无回波，补空格保持宽度 */
+    else
+        OLED_ShowNum(12, y, (uint32_t)cm, 3, 8);
+
+    OLED_ShowString(36, y, (uint8_t *)"cm", 8);
+}
+
+static void Car_ShowAll(void)
+{
+    /* LED 跟随状态：跑着才亮 */
+    if (g_run && !g_stop)
+        LED_On();
+    else
+        LED_Off();
+
 #if MOTOR_TEST_MODE
-    /* 测试模式：OLED 留给速度显示，不显示状态 */
-    (void)running;
-    (void)cmd_text;
+    /* 测试模式：OLED 留给速度显示 */
 #else
-    OLED_Clear();
-    OLED_ShowString(0, 0, (uint8_t *)(running ? "RUN" : "STOP"), 16);
-    OLED_ShowString(0, 2, (uint8_t *)cmd_text, 16);
+    /* 状态行、命令行先按整行清掉再写，避免长短字符串叠加留残字
+     * （"RUN" 比 "STOP" 短、"CMD:STOP" 比 "CMD:START" 短，不清会留尾巴） */
+    OLED_ClearCharArea(0, 0, 21);
+    OLED_ClearCharArea(0, 2, 21);
+
+    if (g_stop)
+        OLED_ShowString(0, 0, (uint8_t *)"FINISH", 8);
+    else if (g_run)
+        OLED_ShowString(0, 0, (uint8_t *)"RUN", 8);
+    else
+        OLED_ShowString(0, 0, (uint8_t *)"STOP", 8);
+
+    OLED_ShowString(0, 2, (uint8_t *)car_cmd_text, 8);
+
+    /* 两路超声波距离（厘米），待机/停车时也在实时刷新 */
+    Car_ShowDistanceLine(4, "L", Avoid_GetLeftCm());
+    Car_ShowDistanceLine(6, "R", Avoid_GetRightCm());
 #endif
 }
 
@@ -382,9 +445,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (!g_track_enable)
         return;  /* 避障接管，中断不控电机 */
 
-    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车 */
-    if (Track_AllBlack())
+    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车
+     *
+     * finish_armed 是"离开黑区才重新武装"的锁存：
+     * 车正停在终点线上时再发 start，如果直接用 Track_AllBlack() 判断，
+     * 会在 10ms 内又被判成终点，车动不了；这里改成要先看到一次
+     * "不全黑"，下一次全黑才算新一轮的终点。 */
+    if (!Track_AllBlack())
     {
+        finish_armed = 1;
+    }
+    else if (finish_armed)
+    {
+        finish_armed = 0;
         g_stop = 1;
         g_track_enable = 0;
         Motor_BrakeAll();
