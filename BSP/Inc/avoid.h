@@ -44,14 +44,14 @@
 /* 转出最大转角：兜底，防止卡死在转向 */
 #define AVOID_AWAY_MAX_DEG 60.0f
 /* 转出时间上限(ms)：转弯慢，留足余量 */
-#define AVOID_AWAY_MAX_MS  500
+#define AVOID_AWAY_MAX_MS  600
 /* 障碍侧探头 > 此值视为障碍已离开侧方 */
 #define AVOID_CLEAR_CM     40
 
 /* ==================== ② 摆正（转回同角） ==================== */
 
 /* 摆正时间上限(ms)：转弯慢，留足余量 */
-#define AVOID_BACK_MAX_MS  1500
+#define AVOID_BACK_MAX_MS  3000
 
 /* ==================== ③ 找回（朝线消失方向） ==================== */
 

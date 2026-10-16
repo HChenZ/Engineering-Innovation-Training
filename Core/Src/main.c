@@ -51,7 +51,7 @@
  * 内外轮保持 1:1.5 比例 → 弧线半径约 42.5cm 不变（横向位移够错开障碍物），
  * 整体提速到 30/45，45° 弧线约 1.3s 转完，不再压超时线。 */
 #define AVOID_TURN_OUTER 20   /* 转向：外轮（快的一侧） */
-#define AVOID_TURN_INNER 5   /* 转向：内轮（慢的一侧） */
+#define AVOID_TURN_INNER 6   /* 转向：内轮（慢的一侧） */
 #define AVOID_GO_SPEED   20   /* 直行：两轮相同 */
 
 /* 电机一致性测试模式：
