@@ -193,7 +193,7 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim1);
 
   /* PID 参数初始化（需实车调，见各环注释） */
-  PID_Init(&pid_pos,     0.05f, 0.0f, 0.0f, 500.0f, -30.0f, 30.0f);   /* 位置环：纯 P，限幅防边缘掉头 */
+  PID_Init(&pid_pos,     0.05f, 0.005f, 0.0f, 500.0f, -40.0f, 40.0f);   /* 位置环：纯 P，限幅防边缘掉头 */
   PID_Init(&pid_speed_l, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 左速度环 */
   PID_Init(&pid_speed_r, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 右速度环 */
   /* USER CODE END 2 */

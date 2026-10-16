@@ -7,9 +7,8 @@
  * 转弯慢、是弧线（内外轮差速），弧线的弧长前进分量足够越过障碍物，
  * 所以【没有直行段】：转出 + 摆正两个弧线大体闭合，成一个"S"形绕行：
  *   ① TURN_AWAY 转出   差速弧线，侧向超声波闭环（障碍离开侧方才停），
- *                       最小45°/最大90°兜底；实际结束角 45°~90° 浮动。
- *   ② TURN_BACK  摆正   差速弧线，反方向转【固定 45°】(AVOID_BACK_DEG)；
- *                       转出角超过 45° 时两弧不严格闭合，残余偏角靠 ③ 补。
+ *                       最小30°/最大60°兜底；实际结束角 30°~60° 浮动。
+ *   ② TURN_BACK  摆正   差速弧线反方向转【固定 75°】(AVOID_BACK_DEG)，不扫线。
  *   ③ SEARCH     找回   朝"线最后消失的那一侧"转+扫，压到线就交回循迹。
  *   ④ RESUME     恢复   低速循迹过渡，让位置环把车头扳正再提速。
  *
@@ -44,23 +43,23 @@
 /* ==================== ① 转出（侧向闭环） ==================== */
 
 /* 转出最小转角：没转够前不因"探头离开"而提前结束，防止误判 */
-#define AVOID_AWAY_MIN_DEG 45.0f
+#define AVOID_AWAY_MIN_DEG 30.0f
 /* 转出最大转角：兜底，防止卡死在转向 */
-#define AVOID_AWAY_MAX_DEG 90.0f
-/* 转出时间上限(ms)：转弯慢，留足余量 */
-#define AVOID_AWAY_MAX_MS  600
+#define AVOID_AWAY_MAX_DEG 60.0f
+/* 转出时间上限(ms)：转弯慢，留足余量（降速后放宽到 1000） */
+#define AVOID_AWAY_MAX_MS  1000
 /* 障碍侧探头 > 此值视为障碍已离开侧方 */
 #define AVOID_CLEAR_CM     40
 
 /* ==================== ② 摆正（固定角度） ==================== */
 
-#define AVOID_BACK_DEG     45.0f   /* 摆正转角(度)：车头回正，配合转出角自己调弧线 */
-#define AVOID_BACK_MAX_MS  3000    /* 摆正时间上限(ms)：转弯慢，留足余量 */
+#define AVOID_BACK_DEG     60.0f   /* ② 固定转角(度)：不扫线，闭眼转满这个角 */
+#define AVOID_BACK_MAX_MS  4000    /* 摆正时间上限(ms)：转弯慢，留足余量 */
 
 /* ==================== ③ 找回（朝线消失方向） ==================== */
 
 #define AVOID_SEARCH_DEG   60.0f   /* 找回转角(度)：转+扫，途中压线立即交回 */
-#define AVOID_SEARCH_MAX_MS 3000   /* 找回时间上限(ms) */
+#define AVOID_SEARCH_MAX_MS 4000   /* 找回时间上限(ms) */
 
 /* ==================== ④ 恢复 ==================== */
 
@@ -83,9 +82,14 @@
 #define AVOID_TRACK_SPEED_SLOW   15   /* 减速循迹（AVOID_SLOW 动作） */
 
 /* 绕障开环 PWM 占空比（0~100）：外轮快、内轮慢，差速越大弧线越急。
- * 当前 20/6（≈1:3.3），和 AVOID_AWAY_MAX_MS 一起决定转出/摆正的节奏。 */
-#define AVOID_TURN_OUTER 20
-#define AVOID_TURN_INNER 6
+ * ① 转出用小弧甩头（差速 16，半径≈30cm），
+ * ② 摆正用大弧绕行（差速 6，半径≈62cm）。
+ * 半径 R = 轮距 × (外+内)/(外−内)，轮距 17cm。 */
+#define AVOID_AWAY_OUTER 22   /* ① 小弧：外轮 */
+#define AVOID_AWAY_INNER  6   /* ① 小弧：内轮 */
+
+#define AVOID_BACK_OUTER 14   /* ② 大弧：外轮 */
+#define AVOID_BACK_INNER  8   /* ② 大弧：内轮 */
 
 /* 避障动作（avoid.c 内部按此驱动电机，见 Avoid_Update） */
 typedef enum

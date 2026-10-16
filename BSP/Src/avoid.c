@@ -36,7 +36,7 @@ typedef enum
 {
     AVOID_STATE_FOLLOW = 0,  /* 正常循迹 */
     AVOID_STATE_TURN_AWAY,   /* ① 转出弧线（侧向闭环） */
-    AVOID_STATE_TURN_BACK,   /* ② 摆正弧线（转回同角） */
+    AVOID_STATE_TURN_BACK,   /* ② 摆正弧线（固定角度，不扫线） */
     AVOID_STATE_SEARCH,      /* ③ 找回（朝线消失方向） */
     AVOID_STATE_RESUME       /* ④ 低速恢复 */
 } AvoidState;
@@ -251,9 +251,7 @@ static AvoidAction Avoid_Decide(void)
         return action;
     }
 
-    /* ---- ② 摆正：反方向差速弧线，转固定角度，车头回正 ----
-     * 【前几步不看线】此段不查循迹传感器，先转够角度把车头摆正。
-     * 转角固定为 AVOID_BACK_DEG，配合转出角自己调弧线。 */
+    /* ---- ② 摆正：反方向差速弧线，固定转 AVOID_BACK_DEG，车头回正（不扫线） ---- */
     case AVOID_STATE_TURN_BACK:
         if (Avoid_TurnMag() < Avoid_TurnTargetPulses(AVOID_BACK_DEG) &&
             (now - state_tick) < AVOID_BACK_MAX_MS)
@@ -334,16 +332,27 @@ static void Avoid_Apply(void)
         break;
 
     case AVOID_TURN_LEFT:
+    {
+        /* ② 摆正用大弧（差速小），①转出/③找回用小弧（差速大） */
+        const int16_t in  = (state == AVOID_STATE_TURN_BACK) ? AVOID_BACK_INNER : AVOID_AWAY_INNER;
+        const int16_t out = (state == AVOID_STATE_TURN_BACK) ? AVOID_BACK_OUTER : AVOID_AWAY_OUTER;
+
         g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_INNER);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_OUTER);
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, in);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, out);
         break;
+    }
 
     case AVOID_TURN_RIGHT:
+    {
+        const int16_t in  = (state == AVOID_STATE_TURN_BACK) ? AVOID_BACK_INNER : AVOID_AWAY_INNER;
+        const int16_t out = (state == AVOID_STATE_TURN_BACK) ? AVOID_BACK_OUTER : AVOID_AWAY_OUTER;
+
         g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_OUTER);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_INNER);
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, out);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, in);
         break;
+    }
     }
 }
 
