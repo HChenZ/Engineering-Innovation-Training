@@ -6,11 +6,14 @@ static int16_t last_position = 0;
 /* 丢线标记 */
 static uint8_t lost = 0;
 
-/* 位置权重表（官方 1,2,4,5 方案，左右对称 8 路）：
- * 中间两路权重 ±1，往外 ±2、±4，最外 ±5。
- * 中间分辨率高、边缘不过猛，兼顾直线稳定和连续弯道。
+/* 位置权重表（左右对称 8 路）
+ * 中间两路权重 ±1，越往外跳得越快：±3、±6、±8。
+ * 这样"中间钝、边上陡"：直线时小偏差不敏感（不容易抖），
+ * 大偏差（快丢线、正在回正）时转向更果断。
+ * ⚠ 表里最大的那个数（8）必须和下面 Track_GetPosition() 里归一化的除数一致，
+ *   否则所有偏差值会被整体放大或缩小（等于顺手改了转向力度）。
  * 注意：只针对 8 路，若改 TRACK_CHANNEL_COUNT 需同步调整。 */
-static const int8_t track_weight[8] = {-5, -4, -2, -1, 1, 2, 4, 5};
+static const int8_t track_weight[8] = {-8, -6, -3, -1, 1, 3, 6, 8};
 
 /* CD4051 地址建立延时：写完地址后输出要几百 ns 才稳定，
  * 72MHz 下这段空循环约 1us，足够覆盖。 */
@@ -103,11 +106,20 @@ int16_t Track_GetPosition(void)
          * 注意：这只对"转向过冲"丢线有效；若是"急弯线在前方"丢线，
          * 反方向会找反，届时改回记忆方向或加限时停车。 */
         lost = 1;
+        /* ⚠ 方向必须和位置环一致：pos > 0 = 线偏右、需右转。
+         *   last_position > 0 说明脱线前线在车头右侧、车没转够、
+         *   线从右边滑出去了 —— 要【继续往右】猛转把它钩回来（返回正值）。
+         *   （原来返回的是负值，正好朝反方向打，把车推向赛道外侧。） */
         if (last_position > 0)
-            return (int16_t)(-TRACK_LOST_STEER);
-        if (last_position < 0)
             return (int16_t)TRACK_LOST_STEER;
-        return 0;
+        if (last_position < 0)
+            return (int16_t)(-TRACK_LOST_STEER);
+        /* ⚠ 这里原来是 return 0，是个坑：如果丢线前最后一个有效偏差正好是 0
+         * （车头斜着压线、线刚好落在传感器排中间），位置环拿到的就是
+         * "完全居中"的假象 -> 转向算出来是 0 -> 车笔直往前开，再也不回头找线。
+         * 实测现象就是：丢线之后 SL≈SR、PL≈PR，车直着冲出赛道。
+         * 改成固定朝一个方向扫（车会画小圈往回找），总比直着开出去强。 */
+        return (int16_t)(-TRACK_LOST_STEER);
     }
 
     /* 加权平均求"压线质心"：
@@ -129,7 +141,7 @@ int16_t Track_GetPosition(void)
     if (sum_a == 0)
         return last_position;
 
-    pos = (int16_t)((sum_w * TRACK_POS_MAX) / (5 * sum_a));  /* 5 = 最边缘权重，单路压边 -> 满偏 */
+    pos = (int16_t)((sum_w * TRACK_POS_MAX) / (8 * sum_a));  /* 8 = 最边缘权重，单路压边 -> 满偏 */
 
 #if TRACK_INVERT
     pos = (int16_t)(-pos);

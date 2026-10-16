@@ -1,0 +1,533 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "tim.h"
+#include "gpio.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "encoder.h"
+#include "led.h"
+#include "motor.h"
+#include "oled_software_i2c.h"
+#include "avoid.h"
+#include "track.h"
+#include "pid.h"
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/* 目标直行速度（单位：脉冲/10ms，取决于车速，需实车标定）
+ * 例：车轮输出轴 1 圈/秒 ≈ 1040 脉冲/秒 ≈ 10.4 脉冲/10ms */
+#define TRACK_SPEED_NORMAL 25   /* 正常循迹目标速度 */
+#define TRACK_SPEED_SLOW   10   /* 避障减速目标速度 */
+
+/* 电机一致性测试模式：
+ *   1 = 不循迹、不避障，左右轮速度环各自闭环到相同目标速度，
+ *       用于排查电机硬件差异（看左右 PWM 是否一致）；测完改回 0 */
+#define MOTOR_TEST_MODE 0
+/* 测试目标速度（脉冲/10ms，约 2 圈/秒） */
+#define MOTOR_TEST_SPEED 20
+
+/* 编码器方向修正：前进时该轮速度应为正。
+ * 若某轮编码器方向反了（速度闭环下该轮会飞转），把对应项设为 1 取反 */
+#define ENC_LEFT_INVERT  1   /* 左轮已确认反了 */
+#define ENC_RIGHT_INVERT 0
+
+/* ==================== 终点停车（8 路全黑）====================
+ * ⚠⚠ 这是"车莫名其妙停死、轮子完全不动、必须重新上电"的唯一来源：
+ *    g_stop 一旦置 1 就永久刹车、永不清零。
+ *
+ * 为什么"8 路全黑"这个判据本身不可靠 ——
+ *   在线上【原地转头】的时候，传感器排会转到和线平行，
+ *   这时 8 路传感器全压在线上，读数和"车头正对着冲过终点线"完全一样。
+ *   所以避障摆头、掉头、斜着切过线，都会被误判成"过终点"。
+ *   这是这个方案的先天缺陷（两条线都是黑线，只能靠"车在干什么"来区分）。
+ *
+ * 四道闸，必须同时成立才停车：
+ *   a) 必须先离开起点线才解锁 —— 上电时车正压在起点线上，
+ *      不然第一拍中断就会判定"过终点"而永久停车；
+ *   b) 全黑之前，车必须【一直在线上正常跑】TRACK_ONLINE_BEFORE 拍；
+ *   c) 全黑必须【连续 TRACK_ALLBLACK_SAMPLES 拍】才确认，中途有一路没压线就清零；
+ *   d) 【车必须是"沿着线直着快跑"】—— 这一条才是真正区分上面两种情况的关键：
+ *      冲过终点线时两轮速度接近、都在快跑；
+ *      原地摆头/掉头时两轮速度差极大（一个在转一个几乎不动），直接判掉。
+ *
+ * ⚠ 现在默认【关闭】。先把"跑完一圈不莫名其妙死"这件事做稳，
+ *   等避障流程彻底顺了、确认不再有误判，再把它改回 1 去拿终点停止分。
+ *   调试阶段强烈建议保持 0 —— 误停一次整轮就没分了。 */
+#define TRACK_STOP_ON_ALLBLACK    0  /* 1 = 启用终点停车；0 = 关闭（调试默认） */
+#define TRACK_ALLBLACK_SAMPLES    3  /* 连续全黑几拍才算终点（1 拍 = 10ms） */
+#define TRACK_ONLINE_BEFORE      10  /* 全黑之前必须连续在线上几拍（10 拍 = 100ms） */
+#define TRACK_STOP_MIN_RUN_MS  1000  /* 离开起点后至少跑多久才允许判终点（毫秒） */
+#define TRACK_STOP_MAX_DIFF      10  /* 左右轮速度差超过这个值就算"在转向"，不算冲线 */
+#define TRACK_STOP_MIN_SPEED      8  /* 两轮自身都要转这么快（脉冲/10ms ≈ 11cm/s） */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+
+/* 循迹状态副本（TIM1 中断里维护，主循环只读）
+ * 目的：让主循环（屏幕显示等）不必去碰循迹的 CD4051 地址线，
+ *       避免和中断抢 GPIO，把循迹读数搞乱。 */
+volatile uint8_t g_track_active = 0;   /* 当前压线的通道数（0 = 丢线） */
+volatile int16_t g_pos_copy = 0;       /* 当前循迹偏差（-1000 ~ +1000） */
+/* USER CODE END PV */
+
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+/* ==================== PID 循迹控制（TIM1 中断里跑） ==================== */
+static PID_t pid_pos;      /* 位置环：循迹偏差 -> 转向速度差 */
+static PID_t pid_speed_l;  /* 左轮速度环 */
+static PID_t pid_speed_r;  /* 右轮速度环 */
+
+/* 控制状态（主循环写，TIM1 中断读，volatile 保证可见性） */
+volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
+volatile uint8_t g_stop = 0;          /* 终止停车标志：全黑确认后置 1，永久停止 */
+volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
+
+/* 调试观测值（中断写，主循环读，OLED 显示用） */
+volatile int16_t g_speed_l = 0;  /* 左轮实测速度（脉冲/10ms） */
+volatile int16_t g_speed_r = 0;  /* 右轮实测速度（脉冲/10ms） */
+volatile int16_t g_pwm_l = 0;    /* 左轮 PWM 输出（-100~100） */
+volatile int16_t g_pwm_r = 0;    /* 右轮 PWM 输出（-100~100） */
+
+/* 终点判定的中间量（中断写，屏幕读）——用来判断"到底是谁让它停的" */
+volatile uint8_t g_black_cnt = 0;   /* 连续全黑次数（到 TRACK_ALLBLACK_SAMPLES 就停车） */
+volatile uint8_t g_online_cnt = 0;  /* 连续压在循迹线上的次数（0 = 刚离线/丢线） */
+
+/* ==================== 屏幕调试显示 ==================== */
+/* 每 200ms 刷新一次（内部限频）。
+ *
+ * ⚠ 这套 OLED 驱动只实现了 6x8 一种字号，sizey 必须传 8；
+ *   x = 像素坐标（0~122，每个字符 6 像素宽），y = 页号（0~7，每页 8 像素高）
+ *
+ * ⚠ 这里只读【副本变量】(g_track_active / g_pos_copy / g_speed_* / g_pwm_*)，
+ *   绝不在这里调用 Track_GetPosition() 之类的函数 —— 那些函数会操作
+ *   CD4051 的地址线，和 TIM1 中断抢 GPIO，会把循迹读数搞乱。
+ *
+ * 显示内容：
+ *   第0行：L/R = 左右超声波距离(cm，-1 = 无回波)  A = 避障动作  S = 停车标志
+ *   第1行：P = 循迹偏差(-1000~1000)  T = 压线路数(8 = 全黑)
+ *          O = 连续在线上几拍（越大说明"正常沿线跑"越久）  B = 连续全黑几拍
+ *   第2行：SL/SR = 左右轮实测速度（脉冲/10ms，看两个轮子一致不一致）
+ *   第3行：PL/PR = 左右轮 PWM 输出（-100~100）  N = 已触发避障次数
+ *
+ * 动作 A：0=循迹 1=减速 2=刹停 3=转出45° 4=直行绕过 5=回正(反向转)
+ *         6=斜着爬回线 7=兜底画弧扫线
+ * 停车 S：0=正常  1=已触发终点停车（只能重新上电复位） */
+static void Debug_Show(void)
+{
+    static uint32_t dbg_tick = 0;
+
+    if (HAL_GetTick() - dbg_tick < 200)
+        return;
+
+    dbg_tick = HAL_GetTick();
+
+    /* ---- 第 0 行：左右超声波 + 避障动作 + 停车标志 ---- */
+    OLED_ShowString(0, 0, (uint8_t *)"L", 8);
+    OLED_ShowSignedNum(6, 0, Avoid_GetLeftCm(), 3, 8);
+
+    OLED_ShowString(30, 0, (uint8_t *)"R", 8);
+    OLED_ShowSignedNum(36, 0, Avoid_GetRightCm(), 3, 8);
+
+    OLED_ShowString(60, 0, (uint8_t *)"A", 8);
+    OLED_ShowNum(66, 0, (uint32_t)Avoid_GetAction(), 1, 8);
+
+    OLED_ShowString(78, 0, (uint8_t *)"S", 8);
+    OLED_ShowNum(84, 0, (uint32_t)g_stop, 1, 8);
+
+    /* ---- 第 1 行：循迹偏差 + 压线路数（读副本，安全） ---- */
+    OLED_ShowString(0, 1, (uint8_t *)"P", 8);
+    OLED_ShowSignedNum(6, 1, g_pos_copy, 4, 8);
+
+    OLED_ShowString(36, 1, (uint8_t *)"T", 8);
+    OLED_ShowNum(42, 1, (uint32_t)g_track_active, 1, 8);
+
+    OLED_ShowString(54, 1, (uint8_t *)"O", 8);
+    OLED_ShowNum(60, 1, (uint32_t)g_online_cnt, 3, 8);
+
+    OLED_ShowString(84, 1, (uint8_t *)"B", 8);
+    OLED_ShowNum(90, 1, (uint32_t)g_black_cnt, 2, 8);
+
+    /* ---- 第 2 行：左右轮实测速度（脉冲/10ms） ---- */
+    OLED_ShowString(0, 2, (uint8_t *)"SL", 8);
+    OLED_ShowSignedNum(12, 2, g_speed_l, 4, 8);
+
+    OLED_ShowString(42, 2, (uint8_t *)"SR", 8);
+    OLED_ShowSignedNum(54, 2, g_speed_r, 4, 8);
+
+    /* ---- 第 3 行：左右轮 PWM 输出 ---- */
+    OLED_ShowString(0, 3, (uint8_t *)"PL", 8);
+    OLED_ShowSignedNum(12, 3, g_pwm_l, 4, 8);
+
+    OLED_ShowString(42, 3, (uint8_t *)"PR", 8);
+    OLED_ShowSignedNum(54, 3, g_pwm_r, 4, 8);
+
+    /* ---- 第 3 行右侧：已经触发过多少次避障动作 ----
+     * 数字一直往上涨 -> 车在反复触发（贴着障碍物来回蹭）；
+     * 数字不动但车停住 -> 停的原因不在避障上。 */
+    OLED_ShowString(84, 3, (uint8_t *)"N", 8);
+    OLED_ShowNum(90, 3, Avoid_GetManeuverCount(), 3, 8);
+}
+
+/* USER CODE END 0 */
+
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_TIM2_Init();
+  MX_TIM4_Init();
+  MX_TIM3_Init();
+  /* USER CODE BEGIN 2 */
+  Motor_Init();
+  Encoder_Init();
+  OLED_Init();
+  Avoid_Init();
+  Track_Init();
+
+  /* TIM1 定时中断：10ms PID 控制周期 */
+  MX_TIM1_Init();
+  HAL_TIM_Base_Start_IT(&htim1);
+
+  /* PID 参数初始化（需实车调，见各环注释） */
+  PID_Init(&pid_pos,     0.05f, 0.0f, 0.0f, 500.0f, -30.0f, 30.0f);   /* 位置环：纯 P，限幅防边缘掉头 */
+  PID_Init(&pid_speed_l, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 左速度环 */
+  PID_Init(&pid_speed_r, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 右速度环 */
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+
+    if (g_stop)
+    {
+        /* 终止停车已触发：电机保持刹车，不再做任何控制。
+         * ⚠ 这里仍然刷新屏幕：不然 S 会永远停在 0，
+         *   看起来像"不是终点逻辑停的"，会把人带到错的方向去查。 */
+        Debug_Show();
+        HAL_Delay(10);
+        continue;
+    }
+
+#if MOTOR_TEST_MODE
+    /* ----- 电机一致性测试：固定目标速度，左右轮速度环各自闭环 ----- */
+    g_track_enable = 1;
+    g_target_speed = MOTOR_TEST_SPEED;
+#else
+    /* ----- 超声波避障决策（循迹 PID 控制在 TIM1 中断里跑） ----- */
+    switch (Avoid_Update())
+    {
+    case AVOID_FOLLOW: /* 正常循迹 */
+        /* 刚从避障交回循迹：清掉避障期间攒下的 PID 残留，
+         * 否则交回的那一拍输出会突然跳一下（车会顿一下/抽一下） */
+        if (!g_track_enable)
+        {
+            PID_Reset(&pid_pos);
+            PID_Reset(&pid_speed_l);
+            PID_Reset(&pid_speed_r);
+        }
+        g_target_speed = TRACK_SPEED_NORMAL;
+        g_track_enable = 1;
+        break;
+
+    case AVOID_SLOW: /* 循迹但减速（AVOID_USE_SLOW = 0 时不会出现） */
+        g_target_speed = TRACK_SPEED_SLOW;
+        g_track_enable = 1;
+        break;
+
+    /* ---- 避障接管：中断停手，主循环按状态机给电机 ----
+     * 关中断是为了让"g_track_enable=0 + 左右轮两条指令"整组原子生效，
+     * 否则中断可能插在中间，出现"左轮避障值 + 右轮循迹值"的混合状态。 */
+    default:
+        __disable_irq();
+        g_track_enable = 0;
+        Avoid_ApplyMotion();
+        __enable_irq();
+        break;
+    }
+#endif  /* MOTOR_TEST_MODE */
+
+    /* 屏幕调试显示（L/R 距离、避障动作、偏差、转速、PWM、停车标志） */
+    Debug_Show();
+
+    HAL_Delay(5);
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/* USER CODE BEGIN 4 */
+/* ==================== 循迹 PID 控制（TIM1 每 10ms 中断一次） ==================== */
+/* 双环结构：
+ *   外环（位置环）：循迹偏差 pos -> 转向速度差 turn
+ *   内环（速度环）：左右轮目标速度 vs 编码器实测速度 -> PWM
+ *
+ * 注意编码器方向：前进时 encoder_left / encoder_right 必须都返回正值。
+ * 如果某个轮子前进时速度为负（安装方向反了），把对应编码器 A/B 相对调，
+ * 或在 Encoder_GetSpeed 后取反。方向错了速度环会发散（飞转/堵转）。 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+#if TRACK_STOP_ON_ALLBLACK
+    /* 终点判定状态（只在本中断里读写，不需要 volatile） */
+    static uint8_t  start_line_cleared = 0;  /* 0 = 还压在起点线上，终点判定上锁 */
+    static uint32_t leave_tick = 0;          /* 离开起点线的时刻（HAL_GetTick） */
+#endif
+
+    int16_t vL, vR;
+
+    if (htim->Instance != TIM1)
+        return;
+
+    if (g_stop)
+        return;  /* 已触发终止停车，不再控制 */
+
+    /* ---- 1. 读编码器（必须在 g_track_enable 判断【之前】）
+     * Encoder_GetSpeed() 是唯一更新累计脉冲 total_count 的地方；
+     * 避障期间也照读，交回循迹时第一次读才不会算出"整个避障期间的巨大增量"，
+     * 速度环也就不会在交回那一拍猛抽一下（车会顿一下）。 ---- */
+    vL = Encoder_GetSpeed(&encoder_left);
+    vR = Encoder_GetSpeed(&encoder_right);
+
+#if ENC_LEFT_INVERT
+    vL = -vL;  /* 左轮编码器方向修正 */
+#endif
+#if ENC_RIGHT_INVERT
+    vR = -vR;  /* 右轮编码器方向修正 */
+#endif
+
+    /* 屏幕显示用（避障期间也刷新，方便看两个轮子一致不一致） */
+    g_speed_l = vL;
+    g_speed_r = vR;
+
+    /* ---- 2. 给屏幕留一份循迹状态副本（主循环读副本，不碰 CD4051 地址线） ---- */
+    g_track_active = Track_CountActive();
+
+    /* ---- 2.5 记录"连续压在线上"的拍数（终点判定的前提，见第 4 步）
+     * 避障期间也照记：绕完障碍回到线上那一瞬间它是 0，
+     * 于是"斜着压线"不会被当成冲过终点线。 ---- */
+    if (g_track_active > 0)
+    {
+        if (g_online_cnt < 250U)
+            g_online_cnt++;
+    }
+    else
+    {
+        g_online_cnt = 0;
+    }
+
+    /* ---- 3. 避障接管时，中断不再控电机 ---- */
+    if (!g_track_enable)
+        return;
+
+#if TRACK_STOP_ON_ALLBLACK
+    /* ---- 4. 终点判定：四个条件同时成立才刹车停车（见文件开头的说明） ---- */
+    if (!start_line_cleared)
+    {
+        /* 起点线解锁：上电时车就压在起点线上，先等它离开 */
+        if (!Track_AllBlack())
+        {
+            start_line_cleared = 1;
+            leave_tick = HAL_GetTick();
+        }
+    }
+    else
+    {
+        /* "沿着线直着快跑"判据：这一条专门把"在线上原地转头"排除掉。
+         * 原地转头时一个轮子快、一个几乎不动，速度差很大；
+         * 冲过终点线时两个轮子都接近目标速度、差值很小。 */
+        const int16_t spd_diff = (vL > vR) ? (int16_t)(vL - vR)
+                                           : (int16_t)(vR - vL);
+        const uint8_t straight = (spd_diff <= TRACK_STOP_MAX_DIFF) &&
+                                 (vL >= TRACK_STOP_MIN_SPEED) &&
+                                 (vR >= TRACK_STOP_MIN_SPEED);
+
+        if (Track_AllBlack() && straight &&
+            (g_online_cnt >= TRACK_ONLINE_BEFORE) &&
+            ((HAL_GetTick() - leave_tick) >= TRACK_STOP_MIN_RUN_MS))
+        {
+            if (g_black_cnt < 250U)
+                g_black_cnt++;
+
+            if (g_black_cnt >= TRACK_ALLBLACK_SAMPLES)
+            {
+                g_stop = 1;
+                g_track_enable = 0;
+                Motor_BrakeAll();
+                return;
+            }
+        }
+        else
+        {
+            g_black_cnt = 0;  /* 条件不齐，重新计数 */
+        }
+    }
+#endif  /* TRACK_STOP_ON_ALLBLACK */
+
+#if MOTOR_TEST_MODE
+    /* 测试模式：不循迹，位置环输出置 0，只跑左右速度环 */
+    float turn = 0.0f;
+#else
+    /* 5. 读循迹位置偏差（-1000 ~ +1000） */
+    int16_t pos = Track_GetPosition();
+    g_pos_copy = pos;   /* 给屏幕显示用的副本 */
+
+    /* 6. 位置环：偏差 -> 转向速度差（脉冲/10ms） */
+    float turn = PID_Update(&pid_pos, (float)pos);
+#endif
+
+    /* 7. 目标速度 = 直行速度 ± 转向（线偏右则左快右慢，向右纠偏） */
+    float vL_target = (float)g_target_speed + turn;
+    float vR_target = (float)g_target_speed - turn;
+
+    /* 8. 速度环：目标 vs 实测 -> PWM 占空比 */
+    float pwm_l = PID_Update(&pid_speed_l, vL_target - (float)vL);
+    float pwm_r = PID_Update(&pid_speed_r, vR_target - (float)vR);
+
+    /* 记录观测值（供 OLED 显示 / 调试观察） */
+    g_pwm_l = (int16_t)pwm_l;
+    g_pwm_r = (int16_t)pwm_r;
+
+    /* 9. 更新电机 */
+    Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, (int16_t)pwm_l);
+    Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, (int16_t)pwm_r);
+}
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the source file name and source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
