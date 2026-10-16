@@ -439,7 +439,7 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim1);
 
   /* PID 参数初始化（需实车调，见各环注释） */
-  PID_Init(&pid_pos,     0.07f, 0.0f, 0.0f, 500.0f, -30.0f, 30.0f);   /* 位置环：纯 P（0.07，回正更果断），限幅防边缘掉头 */
+  PID_Init(&pid_pos,     0.07f, 0.005f, 0.0f, 500.0f, -40.0f, 40.0f);   /* 位置环：纯 P（0.07，回正更果断），限幅防边缘掉头 */
   PID_Init(&pid_speed_l, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 左速度环 */
   PID_Init(&pid_speed_r, 3.0f,  0.05f, 0.0f, 300.0f, -100.0f, 100.0f); /* 右速度环 */
   /* USER CODE END 2 */
@@ -535,8 +535,8 @@ int main(void)
     /* 只在循迹模式下检测，避障期间不检测 */
     if (g_track_enable && !g_align_active && Track_DetectFastSweep())
     {
-        /* 检测到快速扫线：停车，小角度对正 */
-        const int16_t pos = g_pos_copy;
+        /* 检测到快速扫线：停车，根据避障方向对正 */
+        const uint8_t avoid_side = Avoid_GetLastSide();
 
         /* 关闭循迹中断，接管控制 */
         __disable_irq();
@@ -547,26 +547,29 @@ int main(void)
         Motor_BrakeAll();
         HAL_Delay(100);
 
-        /* 根据偏差方向决定转向方向（只有偏差够大才对正） */
-        if (pos > 100 || pos < -100)
+        /* 根据避障方向决定转向方向
+         * 关键逻辑：避障从哪一侧绕过，回线时就需要朝反方向转回来
+         * - 避障从左侧绕过（障碍在左，side=1）：车头朝右偏，需要【右转】对正
+         * - 避障从右侧绕过（障碍在右，side=2）：车头朝左偏，需要【左转】对正 */
+        if (avoid_side == 1 || avoid_side == 2)
         {
-            /* 计算需要转的脉冲数（每度18脉冲） */
-            const int32_t align_pulses = TRACK_ALIGN_TURN_DEG * 18;
+            /* 计算需要转的脉冲数（每度18脉冲），加大到20度 */
+            const int32_t align_pulses = 20 * 18;
             const int32_t ref_l = encoder_left.total_count;
             const int32_t ref_r = encoder_right.total_count;
 
-            /* 坦克转弯对正：朝偏差减小的方向转 */
-            if (pos > 0)
+            /* 坦克转弯对正 */
+            if (avoid_side == 1)
             {
-                /* 线偏右，需要右转 */
-                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, 18);
-                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -18);
+                /* 障碍在左，从左侧绕过 → 车头朝右 → 需要右转 */
+                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, 18);   // 左轮正转
+                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -18);  // 右轮反转
             }
             else
             {
-                /* 线偏左，需要左转 */
-                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, -18);
-                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 18);
+                /* 障碍在右，从右侧绕过 → 车头朝左 → 需要左转 */
+                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, -18);  // 左轮反转
+                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 18);   // 右轮正转
             }
 
             /* 等待转够角度 */

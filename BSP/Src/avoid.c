@@ -689,3 +689,22 @@ uint16_t Avoid_GetStagePulses(void)
 
     return (d > 9999) ? (uint16_t)9999 : (uint16_t)d;
 }
+
+/* 获取最近一次避障的绕行方向 */
+uint8_t Avoid_GetLastSide(void)
+{
+    /* 只有在非FOLLOW状态或者冷却期内才返回有效值 */
+    if (ctx.state != ST_FOLLOW)
+    {
+        return ctx.side;
+    }
+
+    /* 冷却期内也返回上次的side，供大角度对正使用 */
+    if ((HAL_GetTick() - ctx.rearm_tick) < AVOID_REARM_MS)
+    {
+        return ctx.side;
+    }
+
+    /* 已经冷却完毕，返回0 */
+    return 0;
+}

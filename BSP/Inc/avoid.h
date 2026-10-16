@@ -152,7 +152,7 @@
  *   以前分别写 9 / 18 是因为当时只看单侧轮，那是错的。 */
 #define AVOID_PULSES_PER_DEG 18   /* 两轮行程差每 18 脉冲 = 车身转 1° */
 
-#define AVOID_DODGE_DEG      30   /* 转出角度：车头偏离原方向多少度（25 -> 30，平衡绕障和回线）
+#define AVOID_DODGE_DEG      40   /* 转出角度：车头偏离原方向多少度（25 -> 30，平衡绕障和回线）
                                    * 30°既能给障碍物留够余量，又不会离线太远。 */
 /* 回正总共转多少度（就是"直行结束后往反方向转"的那个角度）。
  *
@@ -181,7 +181,7 @@
  *   交回循迹时车头是斜的，循迹接不住，接着就丢线跑飞。
  *   历史里表现为：5 后面紧跟 6、中间没有 8（说明全程没丢过线）。
  *   转出 30° + 画弧 25° 后要求先转够 35°，之后就可以开始检测线。 */
-#define AVOID_CAPTURE_MIN_DEG 35
+#define AVOID_CAPTURE_MIN_DEG 30
 
 /* ==================== 回正过程中要不要"扫到线就提前刹停" ====================
  *   1 = 【新设置】回正过程中边转边检测循迹传感器，一旦压到线就提前停止。
@@ -348,5 +348,10 @@ extern volatile int16_t g_avoid_out_r;
 extern volatile uint16_t g_max_dodge;
 extern volatile uint16_t g_max_pass;
 extern volatile uint16_t g_max_backturn;
+
+/* 获取最近一次避障的绕行方向
+ * 返回值：0 = 未避障或已冷却，1 = 从左侧绕过（障碍物在左），2 = 从右侧绕过（障碍物在右）
+ * 用途：大角度对正时判断转向方向 */
+uint8_t Avoid_GetLastSide(void);
 
 #endif
