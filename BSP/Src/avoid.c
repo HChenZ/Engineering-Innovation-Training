@@ -10,7 +10,7 @@ typedef enum
 {
     ST_FOLLOW = 0,   /* 循迹，只测距 */
     ST_BRAKE,        /* 刹停 */
-    ST_DODGE,        /* 转出 35°（远离障碍） */
+    ST_DODGE,        /* 转出 AVOID_DODGE_DEG（远离障碍） */
     ST_CIRCLE,       /* 绕障碍物画弧（以障碍物为中心做圆周运动） */
     ST_BACKTURN,     /* 反向转找线：车头斜对着线 */
     ST_CAPTURE,      /* 回正途中扫到线：刹停抓住 */
@@ -470,9 +470,9 @@ AvoidAction Avoid_Update(void)
         }
         break;
 
-    /* ---------------- 沿斜角直线爬回线上 ---------------- */
+    /* ---------------- 沿斜角缓弧爬回线上 ---------------- */
     case ST_APPROACH:
-        /* 斜着爬到线时也先"抓住刹停"再交回，而不是带着 30° 斜向冲力直接交接：
+        /* 斜着爬到线时也先"抓住刹停"再交回，而不是带着斜向冲力直接交接：
          * 前者是停稳在线上了再交（循迹从静止对正，最稳），
          * 后者是把还在斜冲的车直接丢给循迹，很容易一交就冲过头又丢线。 */
         if (LineCaptureCheck())
@@ -483,7 +483,7 @@ AvoidAction Avoid_Update(void)
         }
         else if (EncDist() >= AVOID_APPROACH_MAX_PULSES)
         {
-            /* 爬了 87cm 还没看到线：可能已经越过线了，退化成画弧扫线接着找 */
+            /* 爬了约 35cm 还没看到线：可能已经越过线了，退化成画弧扫线接着找 */
             Enter(ST_SWEEP);
             action = AVOID_SWEEP;
         }
