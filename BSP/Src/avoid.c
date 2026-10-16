@@ -1,6 +1,12 @@
 #include "avoid.h"
 #include "track.h"
 #include "encoder.h"
+#include "motor.h"
+
+/* main.c 里的控制状态（TIM1 中断和主循环共享）：
+ *   1 = 中断按 PID 循迹；0 = 避障接管电机。 */
+extern volatile uint8_t g_track_enable;
+extern volatile int16_t g_target_speed;
 
 /* ==================== 避障状态机 ====================
  * 针对"不规则波浪线 + 随机障碍物"设计。
@@ -8,17 +14,23 @@
  * 关键事实（来自比赛规则 + 实车）：
  *   障碍物都在循迹线【任意一侧】、不在线上 -> 线始终可见，不会被挡住；
  *   转弯慢、是弧线（内外轮差速），弧线的弧长前进分量足够越过障碍物，
- *   所以【不要直行段】：转出 + 摆正两个弧线直接闭合，成一个"S"形绕行。
+ *   所以【不要直行段】：转出 + 摆正两个弧线大体闭合，成一个"S"形绕行。
  *   转出弧线横向位移 ≈ R(1-cosθ) > 车半宽 7.5cm（错开障碍物），
- *   纵向位移 ≈ R·sinθ ≈ 30cm（越过最大障碍物 15cm），
- *   摆正弧线对称转回同样角度，车头回正、回到线附近。
+ *   纵向位移 ≈ R·sinθ ≈ 30cm（越过最大障碍物 15cm）。
  *
  * 动作序列（障碍在某一侧时，朝它【反方向】绕）：
  *   ① TURN_AWAY 转出   差速弧线，侧向超声波闭环（障碍离开侧方才停），
- *                       最小45°/最大60°兜底，结束时记录实际转角 away_pulses。
- *   ② TURN_BACK  摆正   差速弧线，反方向转回【转出同样角度】车头回正（不看线）。
+ *                       最小45°/最大90°兜底；实际结束角随障碍大小
+ *                       在 45°~90° 间浮动。
+ *   ② TURN_BACK  摆正   差速弧线，反方向转【固定 45°】(AVOID_BACK_DEG)。
+ *                       转出角超过 45° 时两弧不严格闭合，
+ *                       残余偏角由 ③ 找回阶段消化。
  *   ③ SEARCH     找回   朝【线最后消失的那一侧】转+扫，压线立即交回。
  *   ④ RESUME     恢复   低速循迹过渡，让位置环把车头扳正再提速。
+ *
+ * 执行层：动作 -> 电机 PWM / 循迹控制权的落地也在本模块内完成
+ *   （Avoid_Apply），参数集中在 avoid.h；main.c 只负责初始化、TIM1
+ *   中断和显示，不再重复一套"动作怎么执行"的映射。
  */
 typedef enum
 {
@@ -303,10 +315,43 @@ static AvoidAction Avoid_Decide(void)
     return Avoid_StartAway();
 }
 
+/* 把决策结果落到执行层（原在 main.c 主循环的 switch 里，挪进来去重复）：
+ *   循迹接管 = 先写目标速度、再使能中断循迹，保证中断看到成对的新值；
+ *   转向/直行 = 先夺控制权（关循迹）再写开环 PWM，
+ *               否则中断可能在这轮 PWM 之后又用 PID 值把电机覆盖掉。 */
+static void Avoid_Apply(void)
+{
+    switch (action)
+    {
+    case AVOID_FOLLOW:
+        g_target_speed = AVOID_TRACK_SPEED_NORMAL;
+        g_track_enable = 1;
+        break;
+
+    case AVOID_SLOW:
+        g_target_speed = AVOID_TRACK_SPEED_SLOW;
+        g_track_enable = 1;
+        break;
+
+    case AVOID_TURN_LEFT:
+        g_track_enable = 0;
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_INNER);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_OUTER);
+        break;
+
+    case AVOID_TURN_RIGHT:
+        g_track_enable = 0;
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_OUTER);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_INNER);
+        break;
+    }
+}
+
 AvoidAction Avoid_Update(void)
 {
     Avoid_Sample();
     action = Avoid_Decide();
+    Avoid_Apply();
 
     return action;
 }

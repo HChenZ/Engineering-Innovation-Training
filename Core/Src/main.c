@@ -40,19 +40,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* 目标直行速度（单位：脉冲/10ms，取决于车速，需实车标定）
- * 例：车轮输出轴 1 圈/秒 ≈ 1040 脉冲/秒 ≈ 10.4 脉冲/10ms */
-#define TRACK_SPEED_NORMAL 30   /* 正常循迹目标速度 */
-#define TRACK_SPEED_SLOW   15   /* 避障减速目标速度 */
-
-/* 绕障开环速度（PWM 占空比 0~100）：
- *   转向 = 差速（外轮快、内轮慢），差速越大转得越急；
- *   直行 = 两轮相同。
- * 内外轮保持 1:1.5 比例 → 弧线半径约 42.5cm 不变（横向位移够错开障碍物），
- * 整体提速到 30/45，45° 弧线约 1.3s 转完，不再压超时线。 */
-#define AVOID_TURN_OUTER 20   /* 转向：外轮（快的一侧） */
-#define AVOID_TURN_INNER 6   /* 转向：内轮（慢的一侧） */
-#define AVOID_GO_SPEED   20   /* 直行：两轮相同 */
+/* 注：循迹目标速度、绕障开环 PWM 等参数已归入 avoid.h，
+ * "动作 -> 电机/循迹接管"的执行也在 avoid 模块内完成（Avoid_Update）。
+ * 本文件只保留和电机/编码器硬件相关的调试开关。 */
 
 /* 电机一致性测试模式：
  *   1 = 不循迹、不避障，左右轮速度环各自闭环到相同目标速度，
@@ -96,7 +86,10 @@ static PID_t pid_pos;      /* 位置环：循迹偏差 -> 转向速度差 */
 static PID_t pid_speed_l;  /* 左轮速度环 */
 static PID_t pid_speed_r;  /* 右轮速度环 */
 
-/* 控制状态（主循环写，TIM1 中断读，volatile 保证可见性） */
+/* 循迹交回标记：避障期间 PID 停更，0->1 使能跳变时清一次 PID 残留 */
+static uint8_t pid_need_reset = 1;
+
+/* 控制状态（avoid 模块/主循环写，TIM1 中断读，volatile 保证可见性） */
 volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
 volatile uint8_t g_stop = 0;          /* 终止停车标志：8 路全黑触发，置 1 后永久停止 */
 volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
@@ -114,7 +107,7 @@ static uint32_t disp_tick = 0;   /* OLED 显示刷新计时（仅测试模式用
 /* ==================== 调试显示（OLED，200ms 刷新） ==================== */
 /* 用来定位"循迹跑不了"卡在哪道闸：
  *   第 0 行  L/R   = 左右超声波距离（cm，负数=无回波/盲区）
- *   第 1 行  A     = 避障动作(0循迹 1减速 2左转 3右转 4直行)
+ *   第 1 行  A     = 避障动作(0循迹 1减速 2左转 3右转)
  *            E     = 循迹允许(1=在跑循迹)   S = 终止停车标志
  *   第 2 行  Pl/Pr = 左右轮 PWM 输出
  *   第 3 行  T     = 避障状态(0循迹 1转出 2摆正 3找回 4恢复)
@@ -225,37 +218,10 @@ int main(void)
     g_track_enable = 1;
     g_target_speed = MOTOR_TEST_SPEED;
 #else
-    /* ----- 超声波避障决策（循迹 PID 控制在 TIM1 中断里跑） ----- */
-    switch (Avoid_Update())
-    {
-    case AVOID_FOLLOW: /* 正常循迹 */
-        g_track_enable = 1;
-        g_target_speed = TRACK_SPEED_NORMAL;
-        break;
-
-    case AVOID_SLOW: /* 循迹但减速 */
-        g_track_enable = 1;
-        g_target_speed = TRACK_SPEED_SLOW;
-        break;
-
-    case AVOID_TURN_LEFT: /* 差速往左转（外轮=右轮快，内轮=左轮慢） */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_INNER);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_OUTER);
-        break;
-
-    case AVOID_TURN_RIGHT: /* 差速往右转（外轮=左轮快，内轮=右轮慢） */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_OUTER);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_INNER);
-        break;
-
-    case AVOID_GO: /* 开环直行（绕行途中的直行段） */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_GO_SPEED);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_GO_SPEED);
-        break;
-    }
+    /* ----- 超声波避障：采样 + 决策 + 执行（电机 / 交回循迹）都在 avoid
+     * 模块内完成，这里不再镜像一份"动作 -> 电机"的映射。
+     * （循迹 PID 仍在 TIM1 中断里跑，avoid 只负责切换控制权） ----- */
+    Avoid_Update();
 #endif  /* MOTOR_TEST_MODE */
 
 #if MOTOR_TEST_MODE
@@ -354,7 +320,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         return;  /* 已触发终止停车，不再控制 */
 
     if (!g_track_enable)
-        return;  /* 避障接管，中断不控电机 */
+    {
+        pid_need_reset = 1;   /* 避障接管期间 PID 停更，交回时先清残留 */
+        return;
+    }
+
+    if (pid_need_reset)
+    {
+        /* 循迹刚被交回：避障期间 PID 停止更新，积分/微分还是绕行前的值，
+         * 直接恢复会让输出突变（见 pid.h 的 PID_Reset 说明）。 */
+        PID_Reset(&pid_pos);
+        PID_Reset(&pid_speed_l);
+        PID_Reset(&pid_speed_r);
+        pid_need_reset = 0;
+    }
 
 #if TRACK_STOP_ON_ALLBLACK
     /* 终止条件：8 路全部压线（所有灯亮，宽黑条/终点线）-> 刹车停车 */
