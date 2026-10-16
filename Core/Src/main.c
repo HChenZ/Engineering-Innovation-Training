@@ -42,8 +42,17 @@
 /* USER CODE BEGIN PD */
 /* 目标直行速度（单位：脉冲/10ms，取决于车速，需实车标定）
  * 例：车轮输出轴 1 圈/秒 ≈ 1040 脉冲/秒 ≈ 10.4 脉冲/10ms */
-#define TRACK_SPEED_NORMAL 25   /* 正常循迹目标速度 */
-#define TRACK_SPEED_SLOW   10   /* 避障减速目标速度 */
+#define TRACK_SPEED_NORMAL 30   /* 正常循迹目标速度 */
+#define TRACK_SPEED_SLOW   15   /* 避障减速目标速度 */
+
+/* 绕障开环速度（PWM 占空比 0~100）：
+ *   转向 = 差速（外轮快、内轮慢），差速越大转得越急；
+ *   直行 = 两轮相同。
+ * 内外轮保持 1:1.5 比例 → 弧线半径约 42.5cm 不变（横向位移够错开障碍物），
+ * 整体提速到 30/45，45° 弧线约 1.3s 转完，不再压超时线。 */
+#define AVOID_TURN_OUTER 20   /* 转向：外轮（快的一侧） */
+#define AVOID_TURN_INNER 5   /* 转向：内轮（慢的一侧） */
+#define AVOID_GO_SPEED   20   /* 直行：两轮相同 */
 
 /* 电机一致性测试模式：
  *   1 = 不循迹、不避障，左右轮速度环各自闭环到相同目标速度，
@@ -56,6 +65,11 @@
  * 若某轮编码器方向反了（速度闭环下该轮会飞转），把对应项设为 1 取反 */
 #define ENC_LEFT_INVERT  1   /* 左轮已确认反了 */
 #define ENC_RIGHT_INVERT 0
+
+/* 8 路全压线（所有传感器灯亮，压在宽黑条/终点线上）→ 终止停车。
+ *   1 = 开启；0 = 关闭，只跑循迹不停车。 */
+#define TRACK_STOP_ON_ALLBLACK 1
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -96,6 +110,50 @@ volatile int16_t g_pwm_r = 0;    /* 右轮 PWM 输出（-100~100） */
 #if MOTOR_TEST_MODE
 static uint32_t disp_tick = 0;   /* OLED 显示刷新计时（仅测试模式用） */
 #endif
+
+/* ==================== 调试显示（OLED，200ms 刷新） ==================== */
+/* 用来定位"循迹跑不了"卡在哪道闸：
+ *   第 0 行  L/R   = 左右超声波距离（cm，负数=无回波/盲区）
+ *   第 1 行  A     = 避障动作(0循迹 1减速 2左转 3右转 4直行)
+ *            E     = 循迹允许(1=在跑循迹)   S = 终止停车标志
+ *   第 2 行  Pl/Pr = 左右轮 PWM 输出
+ *   第 3 行  T     = 避障状态(0循迹 1转出 2摆正 3找回 4恢复)
+ *            D     = 本次绕行方向(-1往左 0未定 1往右)  F = 正前方距离(cm) */
+static void Debug_Show(void)
+{
+    static uint32_t dbg_tick = 0;
+
+    if (HAL_GetTick() - dbg_tick < 200)
+        return;
+    dbg_tick = HAL_GetTick();
+
+    // OLED_Clear();
+
+    OLED_ShowString(0, 0, (uint8_t *)"L", 8);
+    OLED_ShowSignedNum(6, 0, Avoid_GetLeftCm(), 3, 8);
+    OLED_ShowString(30, 0, (uint8_t *)"R", 8);
+    OLED_ShowSignedNum(36, 0, Avoid_GetRightCm(), 3, 8);
+
+    OLED_ShowString(0, 1, (uint8_t *)"A", 8);
+    OLED_ShowNum(6, 1, (uint32_t)Avoid_GetAction(), 1, 8);
+    OLED_ShowString(24, 1, (uint8_t *)"E", 8);
+    OLED_ShowNum(30, 1, (uint32_t)g_track_enable, 1, 8);
+    OLED_ShowString(48, 1, (uint8_t *)"S", 8);
+    OLED_ShowNum(54, 1, (uint32_t)g_stop, 1, 8);
+
+    OLED_ShowString(0, 2, (uint8_t *)"P", 8);
+    OLED_ShowSignedNum(6, 2, g_pwm_l, 4, 8);
+    OLED_ShowString(66, 2, (uint8_t *)"Q", 8);
+    OLED_ShowSignedNum(72, 2, g_pwm_r, 4, 8);
+
+    /* 第 3 行：避障状态 T + 绕行方向 D(-1左 / 0未定 / 1右) + 正前方距离 F */
+    OLED_ShowString(0, 3, (uint8_t *)"T", 8);
+    OLED_ShowNum(6, 3, (uint32_t)Avoid_GetState(), 1, 8);
+    OLED_ShowString(24, 3, (uint8_t *)"D", 8);
+    OLED_ShowSignedNum(30, 3, Avoid_GetAwayDir(), 1, 8);
+    OLED_ShowString(48, 3, (uint8_t *)"F", 8);
+    OLED_ShowSignedNum(54, 3, Avoid_GetFrontCm(), 3, 8);
+}
 /* USER CODE END 0 */
 
 /**
@@ -180,27 +238,22 @@ int main(void)
         g_target_speed = TRACK_SPEED_SLOW;
         break;
 
-    case AVOID_BRAKE: /* 立即刹车 */
+    case AVOID_TURN_LEFT: /* 差速往左转（外轮=右轮快，内轮=左轮慢） */
         g_track_enable = 0;
-        Motor_BrakeAll();
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_INNER);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_OUTER);
         break;
 
-    case AVOID_TURN_LEFT: /* 原地左转 */
+    case AVOID_TURN_RIGHT: /* 差速往右转（外轮=左轮快，内轮=右轮慢） */
         g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 40);
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_TURN_OUTER);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_TURN_INNER);
         break;
 
-    case AVOID_TURN_RIGHT: /* 原地右转 */
+    case AVOID_GO: /* 开环直行（绕行途中的直行段） */
         g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, 40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
-        break;
-
-    case AVOID_BACK: /* 后退（默认关掉了，一般不会走到） */
-        g_track_enable = 0;
-        Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, -40);
-        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -40);
+        Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, AVOID_GO_SPEED);
+        Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, AVOID_GO_SPEED);
         break;
     }
 #endif  /* MOTOR_TEST_MODE */
@@ -218,6 +271,10 @@ int main(void)
         OLED_ShowSignedNum(16, 2, g_speed_r, 4, 16);
         OLED_ShowSignedNum(72, 2, g_pwm_r, 4, 16);
     }
+#endif
+
+#if !MOTOR_TEST_MODE
+    Debug_Show();   /* 调试显示：超声波 + 两道闸 + PWM */
 #endif
 
     HAL_Delay(5);
@@ -278,13 +335,29 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (htim->Instance != TIM1)
         return;
 
+    /* 1. 读编码器速度（脉冲/10ms，带符号）
+     * 放在 g_track_enable 判断【之前】：避障/停车期间也持续更新 last_count，
+     * 否则恢复循迹时第一次测速会把避障期间累积的计数当成"巨大速度"，
+     * 速度环猛冲 -> 急停/倒冲。 */
+    int16_t vL = Encoder_GetSpeed(&encoder_left);
+    int16_t vR = Encoder_GetSpeed(&encoder_right);
+
+#if !MOTOR_TEST_MODE
+    /* 2. 读循迹位置偏差（-1000 ~ +1000）。也放在 g_track_enable 判断【之前】：
+     * 避障期间必须持续刷新丢线标志(lost)和 last_position，
+     * 否则避障状态机里 Track_IsLost() 拿到旧值（永远是"没丢线"），
+     * 斜行/回正/找线全判断错，绕行会直接跳回循迹、再也转不回来。 */
+    int16_t pos = Track_GetPosition();
+#endif
+
     if (g_stop)
         return;  /* 已触发终止停车，不再控制 */
 
     if (!g_track_enable)
         return;  /* 避障接管，中断不控电机 */
 
-    /* 终止条件：8 路全部压线（黑块/终点线）-> 刹车停车 */
+#if TRACK_STOP_ON_ALLBLACK
+    /* 终止条件：8 路全部压线（所有灯亮，宽黑条/终点线）-> 刹车停车 */
     if (Track_AllBlack())
     {
         g_stop = 1;
@@ -292,10 +365,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         Motor_BrakeAll();
         return;
     }
-
-    /* 1. 读编码器速度（脉冲/10ms，带符号） */
-    int16_t vL = Encoder_GetSpeed(&encoder_left);
-    int16_t vR = Encoder_GetSpeed(&encoder_right);
+#endif
 
 #if ENC_LEFT_INVERT
     vL = -vL;  /* 左轮编码器方向修正 */
@@ -308,9 +378,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     /* 测试模式：不循迹，位置环输出置 0，只跑左右速度环 */
     float turn = 0.0f;
 #else
-    /* 2. 读循迹位置偏差（-1000 ~ +1000） */
-    int16_t pos = Track_GetPosition();
-
     /* 3. 位置环：偏差 -> 转向速度差（脉冲/10ms） */
     float turn = PID_Update(&pid_pos, (float)pos);
 #endif

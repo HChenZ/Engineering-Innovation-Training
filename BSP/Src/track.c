@@ -98,15 +98,15 @@ int16_t Track_GetPosition(void)
 
     if (bitmap == 0)
     {
-        /* 丢线：往反方向转，往回找线。
-         * 之前线在右（last_position>0）说明右转冲过了线，现在左转往回扫。
-         * 注意：这只对"转向过冲"丢线有效；若是"急弯线在前方"丢线，
-         * 反方向会找反，届时改回记忆方向或加限时停车。 */
+        /* 丢线：顺着记忆方向继续转（往线最后出现的那一侧转）。
+         * 大角度急弯时线往前方拐走、甩出传感器阵列，应该顺着它走的
+         * 方向继续转才能重新压回线；反方向"往回找"只对"转向过冲"有效，
+         * 对急弯会找反、直接冲出赛道。 */
         lost = 1;
         if (last_position > 0)
-            return (int16_t)(-TRACK_LOST_STEER);
+            return (int16_t)TRACK_LOST_STEER;    /* 线之前在右 -> 继续往右转 */
         if (last_position < 0)
-            return (int16_t)TRACK_LOST_STEER;
+            return (int16_t)(-TRACK_LOST_STEER); /* 线之前在左 -> 继续往左转 */
         return 0;
     }
 
@@ -144,11 +144,20 @@ uint8_t Track_IsLost(void)
     return lost;
 }
 
+int8_t Track_GetLastSide(void)
+{
+    if (last_position > 0)
+        return 1;
+    if (last_position < 0)
+        return -1;
+    return 0;
+}
+
 uint8_t Track_AllBlack(void)
 {
     uint8_t bitmap = Track_ReadAll();
 
-    /* 8 路全压线 -> bitmap 全 1 */
+    /* 8 路全压线 -> bitmap 全 1（所有灯亮） */
     return (bitmap == (uint8_t)((1u << TRACK_CHANNEL_COUNT) - 1)) ? 1 : 0;
 }
 
