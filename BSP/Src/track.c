@@ -37,7 +37,7 @@ static uint8_t  flip_detected = 0;          /* 是否检测到偏差快速反向
 #define TRACK_CHANNEL_MASK 0xFF   /* 0xFF = 全部启用（已回退屏蔽）；
                                   * 之前用 0x7E 临时屏蔽第 1、8 路，现在取消。 */
 
-static const int8_t track_weight[8] = {-8, -6, -3, -1, 1, 3, 6, 8};
+static const int8_t track_weight[8] = {-5, -4, -2, -1, 1, 2, 4, 5};
 
 /* CD4051 地址建立延时：写完地址后输出要几百 ns 才稳定，
  * 72MHz 下这段空循环约 1us，足够覆盖。 */
