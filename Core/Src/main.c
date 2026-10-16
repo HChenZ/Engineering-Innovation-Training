@@ -321,7 +321,6 @@ int main(void)
     if (HAL_GetTick() - disp_tick >= 200)
     {
         disp_tick = HAL_GetTick();
-        OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t *)"L", 8);
         OLED_ShowSignedNum(16, 0, g_speed_l, 4, 8);
         OLED_ShowSignedNum(72, 0, g_pwm_l, 4, 8);
@@ -408,8 +407,8 @@ static void Car_ShowAll(void)
 #else
     /* 状态行、命令行先按整行清掉再写，避免长短字符串叠加留残字
      * （"RUN" 比 "STOP" 短、"CMD:STOP" 比 "CMD:START" 短，不清会留尾巴） */
-    OLED_ClearCharArea(0, 0, 21);
-    OLED_ClearCharArea(0, 2, 21);
+    // OLED_ClearCharArea(0, 0, 21);
+    // OLED_ClearCharArea(0, 2, 21);
 
     if (g_stop)
         OLED_ShowString(0, 0, (uint8_t *)"FINISH", 8);
