@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -94,6 +95,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM4_Init();
   MX_TIM3_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   Motor_Init();
   Encoder_Init();
@@ -110,8 +112,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
     /* ----- 编码器使用示例（在定时中断中调用） ----- */
-    int16_t speed_left = Encoder_GetSpeed(&encoder_left);
-    int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+    // int16_t speed_left = Encoder_GetSpeed(&encoder_left);
+    // int16_t speed_right = Encoder_GetSpeed(&encoder_right);
   }
   /* USER CODE END 3 */
 }

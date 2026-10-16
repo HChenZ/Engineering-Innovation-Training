@@ -63,6 +63,10 @@ void Error_Handler(void);
 #define PWMA_GPIO_Port GPIOA
 #define PWMB_Pin GPIO_PIN_1
 #define PWMB_GPIO_Port GPIOA
+#define TRIG3_Pin GPIO_PIN_4
+#define TRIG3_GPIO_Port GPIOA
+#define ECHO3_Pin GPIO_PIN_5
+#define ECHO3_GPIO_Port GPIOA
 #define Encoder_RightA_Pin GPIO_PIN_6
 #define Encoder_RightA_GPIO_Port GPIOA
 #define Encoder_RightB_Pin GPIO_PIN_7
@@ -83,6 +87,14 @@ void Error_Handler(void);
 #define Track_AD0_GPIO_Port GPIOB
 #define Track_Out_Pin GPIO_PIN_15
 #define Track_Out_GPIO_Port GPIOB
+#define TRIG1_Pin GPIO_PIN_8
+#define TRIG1_GPIO_Port GPIOA
+#define ECHO1_Pin GPIO_PIN_9
+#define ECHO1_GPIO_Port GPIOA
+#define TRIG2_Pin GPIO_PIN_10
+#define TRIG2_GPIO_Port GPIOA
+#define ECHO2_Pin GPIO_PIN_11
+#define ECHO2_GPIO_Port GPIOA
 #define OLED_SCL_Pin GPIO_PIN_12
 #define OLED_SCL_GPIO_Port GPIOA
 #define OLED_SDA_Pin GPIO_PIN_5
