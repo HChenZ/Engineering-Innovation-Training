@@ -10,11 +10,11 @@ typedef enum
 {
     ST_FOLLOW = 0,   /* 循迹，只测距 */
     ST_BRAKE,        /* 刹停 */
-    ST_DODGE,        /* 转出 45°（远离障碍） */
-    ST_PASS,         /* 直行绕过（越过障碍物） */
-    ST_BACKTURN,     /* 反向转 65°：车头以 20° 斜对着线 */
+    ST_DODGE,        /* 转出 35°（远离障碍） */
+    ST_CIRCLE,       /* 绕障碍物画弧（以障碍物为中心做圆周运动） */
+    ST_BACKTURN,     /* 反向转找线：车头斜对着线 */
     ST_CAPTURE,      /* 回正途中扫到线：刹停抓住 */
-    ST_APPROACH,     /* 沿 20° 斜角直线爬回线上 */
+    ST_APPROACH,     /* 沿斜角爬回线上 */
     ST_SWEEP         /* 兜底：一直画弧扫线，绝不停车 */
 } AvoidState;
 
@@ -43,7 +43,7 @@ volatile int16_t g_avoid_out_r = 0;
 
 /* 各阶段实际走到的最大脉冲数（峰值记录，屏幕显示用） */
 volatile uint16_t g_max_dodge    = 0;
-volatile uint16_t g_max_pass     = 0;
+volatile uint16_t g_max_pass     = 0;  /* 现在是弧线绕行的距离 */
 volatile uint16_t g_max_backturn = 0;
 
 /* 采样限频 */
@@ -312,7 +312,7 @@ AvoidAction Avoid_Update(void)
 
         if (ctx.state == ST_DODGE && cur > g_max_dodge)
             g_max_dodge = cur;
-        if (ctx.state == ST_PASS && cur > g_max_pass)
+        if (ctx.state == ST_CIRCLE && cur > g_max_pass)  /* ST_CIRCLE复用g_max_pass变量 */
             g_max_pass = cur;
         if (ctx.state == ST_BACKTURN && cur > g_max_backturn)
             g_max_backturn = cur;
@@ -381,18 +381,29 @@ AvoidAction Avoid_Update(void)
     case ST_DODGE:
         if ((EncRot() >= AVOID_DODGE_PULSES) ||
             ((HAL_GetTick() - ctx.tick) >= AVOID_DODGE_MAX_MS))
-            Enter(ST_PASS);
+        {
+            /* 转出完成，进入画弧绕障碍物 */
+            Enter(ST_CIRCLE);
+        }
 
         action = AVOID_DODGE;
         break;
 
-    /* ---------------- 直行绕过：走够 AVOID_PASS_PULSES，让车尾也越过障碍 ---------------- */
-    case ST_PASS:
-        if ((EncDist() >= AVOID_PASS_PULSES) ||
+    /* ---------------- 绕障碍物画弧：以障碍物为中心做圆周运动 ----------------
+     * 转出后不是直线或急弯，而是保持一个较大的转弯半径持续转弯，
+     * 车身以障碍物为中心画一段圆弧，绕过障碍物。
+     * 两轮都在前进但速度不同，外侧轮快、内侧轮慢，形成圆周运动。 */
+    case ST_CIRCLE:
+        if ((EncDist() >= AVOID_CIRCLE_PULSES) ||
             ((HAL_GetTick() - ctx.tick) >= AVOID_PASS_MAX_MS))
+        {
+            /* 画弧结束，刹停一下再进入回正 */
+            Motor_BrakeAll();
+            HAL_Delay(AVOID_BACKTURN_BRAKE_MS);
             Enter(ST_BACKTURN);
+        }
 
-        action = AVOID_PASS;
+        action = AVOID_PASS;  /* 复用AVOID_PASS动作码，显示兼容 */
         break;
 
     /* ---------------- 回正：反向转 (转出角 + 回线角)，车头斜对着线 ----------------
@@ -568,10 +579,21 @@ void Avoid_ApplyMotion(void)
         }
         break;
 
-    /* 直行绕过 / 斜着爬回线：两轮同速 */
-    case ST_PASS:
-        l = AVOID_PASS_PWM;
-        r = AVOID_PASS_PWM;
+    /* 绕障碍物画弧：两轮都前进，速度差产生圆周运动 */
+    case ST_CIRCLE:
+        /* 转向方向：继续朝远离障碍物的方向转（和转出同向）
+         * 障碍在左 -> 右转（左慢右快），障碍在右 -> 左转（左快右慢）
+         * 速度差较小，形成较大的转弯半径，以障碍物为中心画弧 */
+        if (ctx.side == 1)
+        {
+            l = AVOID_CIRCLE_SLOW;
+            r = AVOID_CIRCLE_FAST;
+        }
+        else
+        {
+            l = AVOID_CIRCLE_FAST;
+            r = AVOID_CIRCLE_SLOW;
+        }
         break;
 
     case ST_APPROACH:

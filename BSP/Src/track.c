@@ -6,6 +6,23 @@ static int16_t last_position = 0;
 /* 丢线标记 */
 static uint8_t lost = 0;
 
+/* ==================== 大角度切入检测（避障后垂直入线判据）==================== */
+/* 检测逻辑：避障结束后，车头与线接近垂直（90°），快速横扫过线。
+ * 场景：避障回正后，车以很大的角度（接近90°）切入线，传感器快速从一侧扫到另一侧。
+ *
+ * 判据：
+ * 1. 传感器快速从一侧切换到另一侧（左→右 或 右→左）
+ * 2. 偏差快速反向且幅度大（从-800跳到+800，或反之）
+ * 3. 短时间内（100ms）完成这个过程
+ */
+#define LARGE_ANGLE_DETECT_WINDOW_MS  100   /* 检测时间窗口100ms */
+#define LARGE_ANGLE_FLIP_THRESH       600   /* 偏差反向阈值（从一侧跳到另一侧） */
+
+static int16_t  prev_pos_for_flip = 0;      /* 上一拍的偏差 */
+static uint32_t flip_detect_tick = 0;       /* 检测到反向的时刻 */
+static uint8_t  large_angle_detected = 0;   /* 是否已检测到 */
+static uint8_t  flip_detected = 0;          /* 是否检测到偏差快速反向 */
+
 /* 位置权重表（左右对称 8 路）
  * 中间两路权重 ±1，越往外跳得越快：±3、±6、±8。
  * 这样"中间钝、边上陡"：直线时小偏差不敏感（不容易抖），
@@ -50,6 +67,12 @@ void Track_Init(void)
 {
     last_position = 0;
     lost = 0;
+
+    /* 大角度切入检测初始化 */
+    prev_pos_for_flip = 0;
+    flip_detect_tick = 0;
+    large_angle_detected = 0;
+    flip_detected = 0;
 
     /* 地址线初始选通 0 号通道 */
     Track_SelectChannel(0);
@@ -188,4 +211,68 @@ TrackState Track_Update(void)
         return TRACK_LEFT;
 
     return TRACK_CENTER;
+}
+
+/* 大角度切入检测：避障后垂直入线，偏差快速反向 */
+uint8_t Track_DetectFastSweep(void)
+{
+    int16_t pos = last_position;  /* 当前偏差 */
+    uint32_t now = HAL_GetTick();
+
+    /* 如果已经检测到，保持标志直到Reset */
+    if (large_angle_detected)
+        return 1;
+
+    /* 检测偏差快速反向（从一侧跳到另一侧）
+     * 场景：车以90°角切入线，传感器从左侧快速扫到右侧（或反之）
+     * 偏差会从 -800 快速变到 +800，或从 +800 快速变到 -800 */
+
+    /* 检测到偏差反向且幅度够大 */
+    if (!flip_detected)
+    {
+        /* 从左侧（负值）跳到右侧（正值） */
+        if (prev_pos_for_flip < -LARGE_ANGLE_FLIP_THRESH &&
+            pos > LARGE_ANGLE_FLIP_THRESH)
+        {
+            flip_detected = 1;
+            flip_detect_tick = now;
+        }
+        /* 从右侧（正值）跳到左侧（负值） */
+        else if (prev_pos_for_flip > LARGE_ANGLE_FLIP_THRESH &&
+                 pos < -LARGE_ANGLE_FLIP_THRESH)
+        {
+            flip_detected = 1;
+            flip_detect_tick = now;
+        }
+    }
+
+    /* 如果检测到反向，并且在时间窗口内（说明反向很快） */
+    if (flip_detected)
+    {
+        if ((now - flip_detect_tick) <= LARGE_ANGLE_DETECT_WINDOW_MS)
+        {
+            /* 确认是大角度切入 */
+            large_angle_detected = 1;
+            return 1;
+        }
+        else
+        {
+            /* 超时，可能是误判，重置 */
+            flip_detected = 0;
+        }
+    }
+
+    /* 更新上一拍偏差 */
+    prev_pos_for_flip = pos;
+
+    return 0;
+}
+
+/* 重置大角度切入检测器 */
+void Track_ResetFastSweep(void)
+{
+    prev_pos_for_flip = 0;
+    flip_detect_tick = 0;
+    large_angle_detected = 0;
+    flip_detected = 0;
 }

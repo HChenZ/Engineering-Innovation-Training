@@ -95,6 +95,15 @@ uint8_t Track_IsLost(void);
 /* 是否 8 路全部压线（全黑，常见于终点线/停止线/宽黑块） */
 uint8_t Track_AllBlack(void);
 
+/* 快速扫线检测：短时间内多个传感器依次亮过（车快速扫过线）
+ * 返回：1 = 检测到快速扫线（大角度切入），0 = 正常情况
+ * 用途：大角度切入循迹时，传感器会在很短时间内看到多个通道依次亮起，
+ *       检测到后可以先停车转小角度对正，然后再接入循迹。 */
+uint8_t Track_DetectFastSweep(void);
+
+/* 重置快速扫线检测器（交回循迹时调用，清空历史） */
+void Track_ResetFastSweep(void);
+
 /* 每个主循环调用一次：刷新采样并返回离散建议动作。
  * 只想拿连续偏差自己做 PID，就只用 Track_GetPosition()，不必管这个 */
 TrackState Track_Update(void);

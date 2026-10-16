@@ -139,6 +139,18 @@
 #define TRACK_ASSIST_GAIN  0.9f  /* 漂移率 -> 转向的增益；拧得太猛就降到 0.5 */
 #define TRACK_ASSIST_MAX      8  /* 辅助项本身的限幅（脉冲/10ms），防一把猛打 */
 
+/* ==================== 大角度进入循迹对正（治"斜着切入跟不上去"）====================
+ * 现象：避障结束后车大角度斜着切入线，传感器快速扫过线，循迹来不及对正就丢线。
+ *
+ * 检测：短时间内（200ms）有4-6个不同的传感器亮过 -> 说明传感器快速横扫过线。
+ *
+ * 对正：检测到后先停车，小角度转弯对正（朝偏差减小的方向转），
+ *       然后接入循迹并临时增大Kp，让回正更果断。 */
+#define TRACK_ALIGN_ENABLE        1    /* 1 = 启用大角度对正；0 = 关闭 */
+#define TRACK_ALIGN_TURN_DEG     12    /* 对正转向角度（度），10-15度范围 */
+#define TRACK_ALIGN_KP_BOOST    1.4f   /* 对正后临时Kp倍率（持续TRACK_ALIGN_KP_MS） */
+#define TRACK_ALIGN_KP_MS       500    /* 临时增大Kp的持续时间（毫秒） */
+
 
 /* ==================== 终点停车（8 路全黑）====================
  * ⚠⚠ 这是"车莫名其妙停死、轮子完全不动、必须重新上电"的唯一来源：
@@ -204,6 +216,10 @@ static PID_t pid_speed_r;  /* 右轮速度环 */
 volatile uint8_t g_track_enable = 0;   /* 1=中断循迹，0=避障接管 */
 volatile uint8_t g_stop = 0;          /* 终止停车标志：全黑确认后置 1，永久停止 */
 volatile int16_t g_target_speed = 20;  /* 目标直行速度（脉冲/10ms） */
+
+/* 大角度对正状态（主循环写，TIM1 中断读） */
+volatile uint8_t  g_align_active = 0;   /* 1=正在执行对正，0=正常 */
+volatile uint32_t g_align_kp_until = 0; /* 临时增大Kp的截止时刻 */
 
 /* 调试观测值（中断写，主循环读，OLED 显示用） */
 volatile int16_t g_speed_l = 0;  /* 左轮实测速度（脉冲/10ms） */
@@ -489,7 +505,9 @@ int main(void)
             PID_Reset(&pid_pos);
             PID_Reset(&pid_speed_l);
             PID_Reset(&pid_speed_r);
+            Track_ResetFastSweep();  /* 重置快速扫线检测 */
         }
+
         g_target_speed = TRACK_SPEED_NORMAL;
         g_track_enable = 1;
         break;
@@ -511,6 +529,86 @@ int main(void)
     }
     }
 #endif  /* MOTOR_TEST_MODE */
+
+#if TRACK_ALIGN_ENABLE && !MOTOR_TEST_MODE
+    /* ==================== 大角度进入循迹检测与对正（独立检测，每次主循环都执行）==================== */
+    /* 只在循迹模式下检测，避障期间不检测 */
+    if (g_track_enable && !g_align_active && Track_DetectFastSweep())
+    {
+        /* 检测到快速扫线：停车，小角度对正 */
+        const int16_t pos = g_pos_copy;
+
+        /* 关闭循迹中断，接管控制 */
+        __disable_irq();
+        g_track_enable = 0;
+        __enable_irq();
+
+        /* 刹车停稳 */
+        Motor_BrakeAll();
+        HAL_Delay(100);
+
+        /* 根据偏差方向决定转向方向（只有偏差够大才对正） */
+        if (pos > 100 || pos < -100)
+        {
+            /* 计算需要转的脉冲数（每度18脉冲） */
+            const int32_t align_pulses = TRACK_ALIGN_TURN_DEG * 18;
+            const int32_t ref_l = encoder_left.total_count;
+            const int32_t ref_r = encoder_right.total_count;
+
+            /* 坦克转弯对正：朝偏差减小的方向转 */
+            if (pos > 0)
+            {
+                /* 线偏右，需要右转 */
+                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, 18);
+                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -18);
+            }
+            else
+            {
+                /* 线偏左，需要左转 */
+                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, -18);
+                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 18);
+            }
+
+            /* 等待转够角度 */
+            while (1)
+            {
+                const int32_t dl = encoder_left.total_count - ref_l;
+                const int32_t dr = encoder_right.total_count - ref_r;
+                const int32_t rot = (dl > dr) ? (dl - dr) : (dr - dl);
+
+                if (rot >= align_pulses)
+                    break;
+
+                HAL_Delay(10);
+            }
+
+            /* 停车 */
+            Motor_BrakeAll();
+            HAL_Delay(50);
+        }
+
+        /* 标记对正完成，接下来临时增大Kp，重新启用循迹 */
+        g_align_active = 1;
+        g_align_kp_until = HAL_GetTick() + TRACK_ALIGN_KP_MS;
+        Track_ResetFastSweep();  /* 清除检测标志 */
+
+        /* 清空PID残留 */
+        PID_Reset(&pid_pos);
+        PID_Reset(&pid_speed_l);
+        PID_Reset(&pid_speed_r);
+
+        /* 重新启用循迹 */
+        __disable_irq();
+        g_track_enable = 1;
+        __enable_irq();
+    }
+
+    /* 检查临时Kp是否到期 */
+    if (g_align_active && (int32_t)(g_align_kp_until - HAL_GetTick()) <= 0)
+    {
+        g_align_active = 0;
+    }
+#endif
 
     /* 屏幕调试显示（L/R 距离、避障动作、偏差、转速、PWM、停车标志） */
     Debug_Show();
@@ -740,8 +838,37 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     /* 5. 循迹位置偏差（在第 2.7 步已经读过，这里直接取副本） */
     const int16_t pos = g_pos_copy;
 
-    /* 6. 位置环：偏差 -> 转向速度差（脉冲/10ms） */
+    /* 6. 位置环：偏差 -> 转向速度差（脉冲/10ms）
+     * 大角度对正后临时增大Kp，让回正更果断。 */
+#if TRACK_ALIGN_ENABLE
+    if (g_align_active)
+    {
+        pid_pos.Kp *= TRACK_ALIGN_KP_BOOST;
+    }
+#endif
+
     float turn = PID_Update(&pid_pos, (float)pos);
+
+#if TRACK_ALIGN_ENABLE
+    if (g_align_active)
+    {
+        pid_pos.Kp /= TRACK_ALIGN_KP_BOOST;  /* 恢复原值 */
+    }
+#endif
+
+    /* 6.05 大角度回正增强：偏差很大时额外补一个转向，加快回正速度。
+     * 只在压线时生效（丢线时不加，避免干扰搜索逻辑）。
+     * 偏差 >= 700 时补偿 +10，让大角度切入时回正更果断。 */
+    if (!Track_IsLost())
+    {
+        const int16_t apos = (pos < 0) ? (int16_t)(-pos) : pos;
+        if (apos >= 700)
+        {
+            /* 补偿方向和偏差方向一致：pos > 0 补正值，pos < 0 补负值 */
+            const float boost = (pos > 0) ? 10.0f : -10.0f;
+            turn += boost;
+        }
+    }
 
     /* 6.1 丢线时：上面的 P 输出没有意义（偏差是个固定值），
      *     改用"宽弧 + 定时换向"的搜索方式（见 TRACK_SEARCH_* 的说明）。 */
