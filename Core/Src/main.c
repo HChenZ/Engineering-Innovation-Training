@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bluetooth.h"
 #include "encoder.h"
 #include "led.h"
 #include "motor.h"
@@ -97,6 +98,7 @@ int main(void)
   MX_TIM3_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  Bluetooth_Init();
   Motor_Init();
   Encoder_Init();
   OLED_Init();
@@ -111,9 +113,56 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ----- 编码器使用示例（在定时中断中调用） ----- */
+    /* ---------- 编码器使用示例（在定时中断中调用） ---------- */
     // int16_t speed_left = Encoder_GetSpeed(&encoder_left);
     // int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+
+    /* ---------- 蓝牙使用示例：启动 / 停车 ---------- */
+    // BluetoothCmd bt_cmd;
+
+    // while ((bt_cmd = Bluetooth_GetCommand()) != BT_CMD_NONE)
+    // {
+    //     switch (bt_cmd)
+    //     {
+    //     case BT_CMD_START: /* 手机发 start / s / 1 */
+    //         /* !g_run：待机中重新起步；g_stop：终点停车后想再跑一轮
+    //          * （终点停车时 g_run 仍然是 1，所以必须把 g_stop 也算进来，
+    //          *   否则这里会走下面的 "OK RUNNING" 分支，车永远起不来） */
+    //         if (!g_run || g_stop)
+    //         {
+    //             g_stop = 0; /* 解除终点停车 */
+    //             /* 清 PID 内部状态，避免上次跑完的积分残留让车"窜"一下 */
+    //             PID_Reset(&pid_pos);
+    //             PID_Reset(&pid_speed_l);
+    //             PID_Reset(&pid_speed_r);
+    //             /* 这里不直接使能电机：本轮往下就会调用 Avoid_Update()，
+    //              * 先用最新距离判一次——车头已经贴障碍物就先刹车/绕行，
+    //              * 不会带着速度往前冲（停车期间距离一直在更新） */
+    //             g_run = 1;
+    //             car_cmd_text = "CMD:START";
+    //             Car_ShowAll(); /* 立刻刷新状态行 / LED */
+    //             Bluetooth_SendString("OK START\r\n");
+    //         }
+    //         else
+    //         {
+    //             Bluetooth_SendString("OK RUNNING\r\n"); /* 已经在跑，忽略重复命令 */
+    //         }
+    //         break;
+
+    //     case BT_CMD_STOP: /* 手机发 stop / p / 0 */
+    //         g_run = 0;
+    //         g_track_enable = 0;
+    //         Motor_BrakeAll();
+    //         car_cmd_text = "CMD:STOP";
+    //         Car_ShowAll();
+    //         Bluetooth_SendString("OK STOP\r\n");
+    //         break;
+
+    //     default: /* BT_CMD_UNKNOWN */
+    //         Bluetooth_SendString("ERR\r\n");
+    //         break;
+    //     }
+    // }
   }
   /* USER CODE END 3 */
 }
