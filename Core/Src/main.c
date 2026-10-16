@@ -25,7 +25,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bluetooth.h"
+#include "delay_us.h"
 #include "encoder.h"
+#include "greyscale_sensor.h"
 #include "led.h"
 #include "motor.h"
 #include "oled_software_i2c.h"
@@ -98,6 +100,8 @@ int main(void)
   MX_TIM3_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  DWT_Init();
+
   Bluetooth_Init();
   Motor_Init();
   Encoder_Init();
