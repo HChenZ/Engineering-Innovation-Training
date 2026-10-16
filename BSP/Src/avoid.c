@@ -396,17 +396,16 @@ AvoidAction Avoid_Update(void)
         break;
 
     /* ---------------- 回正：反向转 (转出角 + 回线角)，车头斜对着线 ----------------
-     * 这一步是整个回线能不能成的关键：先把车头转正，
-     * 否则车会以 45° 斜着扎过线，循迹根本来不及对正（详见 avoid.h 的说明）。
+     * 这一步是整个回线能不能成的关键：先把车头转正，再交给"斜爬回线"去找线。
      *
-     * 这里【同时盯着循迹传感器】，不闭着眼睛转满角度：
-     *   转动过程中传感器会横扫过线（车头是绕后轴转的，扫过的弧很大），
-     *   一旦扫到就立刻刹停抓住。等转完再去看线就晚了 ——
-     *   线已经从传感器下面扫过去了，后面直行只会越爬越远。 */
+     * ⚠ 这里【一定转满固定角度】，不再"扫到线就提前刹停"（详见 avoid.h 的
+     *   AVOID_BACKTURN_CAPTURE）。理由：提前停会让回正的实际角度随"线在哪儿
+     *   出现"乱变，转角不可复现；而找线这件事交给后面的缓弧爬线更合适。 */
     case ST_BACKTURN:
     {
         const int32_t rotated = EncRot();
 
+#if AVOID_BACKTURN_CAPTURE
         /* 必须先转够 AVOID_CAPTURE_MIN_DEG 才允许抓线：
          * 否则线还挂在传感器排上的时候，回正一开始就被"抓住"刹停，
          * 车头根本没转回来（详见 avoid.h 里这个宏的说明）。 */
@@ -417,7 +416,9 @@ AvoidAction Avoid_Update(void)
             Enter(ST_CAPTURE);
             action = AVOID_CAPTURE;
         }
-        else if ((rotated >= AVOID_BACKTURN_PULSES) ||
+        else
+#endif
+        if ((rotated >= AVOID_BACKTURN_PULSES) ||
                  ((HAL_GetTick() - ctx.tick) >= AVOID_BACKTURN_MAX_MS))
         {
             Enter(ST_APPROACH);

@@ -13,6 +13,13 @@ static uint8_t lost = 0;
  * ⚠ 表里最大的那个数（8）必须和下面 Track_GetPosition() 里归一化的除数一致，
  *   否则所有偏差值会被整体放大或缩小（等于顺手改了转向力度）。
  * 注意：只针对 8 路，若改 TRACK_CHANNEL_COUNT 需同步调整。 */
+/* 通道屏蔽掩码：bit n = 1 表示第 (n+1) 路启用。
+ * 0x7E = 第 1 路和第 8 路【屏蔽】—— 它们是最外侧、权重最大的两路，
+ * 灵敏度调不好时误报会造成满量程假偏差（±1000）。
+ * 想恢复：把掩码改回 0xFF。 */
+#define TRACK_CHANNEL_MASK 0xFF   /* 0xFF = 全部启用（已回退屏蔽）；
+                                  * 之前用 0x7E 临时屏蔽第 1、8 路，现在取消。 */
+
 static const int8_t track_weight[8] = {-8, -6, -3, -1, 1, 3, 6, 8};
 
 /* CD4051 地址建立延时：写完地址后输出要几百 ns 才稳定，
@@ -69,6 +76,8 @@ uint8_t Track_ReadAll(void)
 
     for (ch = 0; ch < TRACK_CHANNEL_COUNT; ch++)
     {
+        if (!(TRACK_CHANNEL_MASK & (1u << ch)))
+            continue;                /* 被屏蔽的通道：永远当作"没压线" */
         if (Track_Read(ch))
             bitmap |= (uint8_t)(1u << ch);
     }
@@ -161,7 +170,8 @@ uint8_t Track_AllBlack(void)
     uint8_t bitmap = Track_ReadAll();
 
     /* 8 路全压线 -> bitmap 全 1 */
-    return (bitmap == (uint8_t)((1u << TRACK_CHANNEL_COUNT) - 1)) ? 1 : 0;
+    /* 只比【启用】的通道是否全压线（被屏蔽的不参与） */
+    return (bitmap == (uint8_t)(TRACK_CHANNEL_MASK & ((1u << TRACK_CHANNEL_COUNT) - 1))) ? 1 : 0;
 }
 
 TrackState Track_Update(void)
