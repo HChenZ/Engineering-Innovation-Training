@@ -30,9 +30,9 @@
 /* ==================== 距离阈值（厘米） ==================== */
 
 /* 小于该距离立即开始绕行。障碍物贴线放时车半宽 7.5cm 才够错开，要提前动作 */
-#define AVOID_STOP_CM      25
+#define AVOID_STOP_CM      18
 /* 小于该距离减速但继续循迹 */
-#define AVOID_SLOW_CM      45
+#define AVOID_SLOW_CM      30
 
 /* 采样周期(ms)：每个周期左右两个探头都读一遍 */
 #define AVOID_SAMPLE_MS    15
@@ -42,16 +42,16 @@
 /* 转出最小转角：没转够前不因"探头离开"而提前结束，防止误判 */
 #define AVOID_AWAY_MIN_DEG 45.0f
 /* 转出最大转角：兜底，防止卡死在转向 */
-#define AVOID_AWAY_MAX_DEG 60.0f
+#define AVOID_AWAY_MAX_DEG 90.0f
 /* 转出时间上限(ms)：转弯慢，留足余量 */
 #define AVOID_AWAY_MAX_MS  600
 /* 障碍侧探头 > 此值视为障碍已离开侧方 */
 #define AVOID_CLEAR_CM     40
 
-/* ==================== ② 摆正（转回同角） ==================== */
+/* ==================== ② 摆正（固定角度） ==================== */
 
-/* 摆正时间上限(ms)：转弯慢，留足余量 */
-#define AVOID_BACK_MAX_MS  3000
+#define AVOID_BACK_DEG     45.0f   /* 摆正转角(度)：车头回正，配合转出角自己调弧线 */
+#define AVOID_BACK_MAX_MS  3000    /* 摆正时间上限(ms)：转弯慢，留足余量 */
 
 /* ==================== ③ 找回（朝线消失方向） ==================== */
 

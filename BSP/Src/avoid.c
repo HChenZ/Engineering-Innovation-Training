@@ -37,7 +37,6 @@ static uint32_t state_tick = 0;     /* 状态切换时刻 */
 static uint32_t sample_tick = 0;    /* 上次采样时刻 */
 static uint32_t cooldown_until = 0; /* 绕行后的冷却截止时刻 */
 static int32_t turn_base = 0;       /* 转向起始时 (右+左) 的累计脉冲 */
-static int32_t away_pulses = 0;     /* 转出实际转角(脉冲)，摆正按它转回 */
 
 /* 转 deg 度需要左右轮累计的脉冲差(绝对值)：
  *   每脉冲行进 = π·D / CPR
@@ -157,7 +156,6 @@ void Avoid_Init(void)
     action = AVOID_FOLLOW;
     away_dir = 0;
     line_last_side = 0;
-    away_pulses = 0;
     state_tick = HAL_GetTick();
     sample_tick = HAL_GetTick();
     cooldown_until = 0;
@@ -233,8 +231,7 @@ static AvoidAction Avoid_Decide(void)
             return action;
         }
 
-        /* 转出结束：记录实际转角，直接摆正（两个弧线闭合，不直行） */
-        away_pulses = mag;
+        /* 转出结束：直接摆正（两个弧线闭合，不直行） */
         Avoid_TurnReset();
         state = AVOID_STATE_TURN_BACK;
         state_tick = now;
@@ -242,10 +239,12 @@ static AvoidAction Avoid_Decide(void)
         return action;
     }
 
-    /* ---- ② 摆正：反方向差速弧线，转回【转出同样角度】，车头回正 ----
-     * 【前几步不看线】此段不查循迹传感器，先转够角度把车头摆正。 */
+    /* ---- ② 摆正：反方向差速弧线，转固定角度，车头回正 ----
+     * 【前几步不看线】此段不查循迹传感器，先转够角度把车头摆正。
+     * 转角固定为 AVOID_BACK_DEG，配合转出角自己调弧线。 */
     case AVOID_STATE_TURN_BACK:
-        if (Avoid_TurnMag() < away_pulses && (now - state_tick) < AVOID_BACK_MAX_MS)
+        if (Avoid_TurnMag() < Avoid_TurnTargetPulses(AVOID_BACK_DEG) &&
+            (now - state_tick) < AVOID_BACK_MAX_MS)
             return action;
 
         /* 摆正完：进入找回，朝线最后消失的那一侧转 */
