@@ -24,6 +24,8 @@
 //          （一个字节都不丢：接收在 USART2 中断里，主循环只是来取）
 
 #include "main.h"
+#include "usart.h"
+#include <string.h>
 
 /* 蓝牙命令 */
 typedef enum

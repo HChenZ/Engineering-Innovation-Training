@@ -1,6 +1,4 @@
 #include "bluetooth.h"
-#include "usart.h"
-#include <string.h>
 
 /* ==================== 接收缓冲区 ====================
  * 单生产者（USART2 中断）→ 单消费者（主循环）：
@@ -123,12 +121,8 @@ void Bluetooth_Init(void)
     line_tick = HAL_GetTick();
     pending_cmd = BT_CMD_NONE;
 
-    /* 使能 USART2 中断，优先级为 2 */
-    HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
-
     /* 打开中断接收：每收到 1 字节进一次回调，回调里自动续上 */
-    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    HAL_UART_Receive_DMA(&huart2, &rx_byte, 1);
 }
 
 /* 串口接收完成回调（中断上下文）：收到 1 个字节 */
@@ -147,7 +141,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         rx_head = next;
     }
 
-    HAL_UART_Receive_IT(huart, &rx_byte, 1); /* 继续收下一个字节 */
+    HAL_UART_Receive_DMA(huart, &rx_byte, 1); /* 继续收下一个字节 */
 }
 
 /* 串口错误回调（中断上下文）：溢出/帧错误会让 HAL 关掉接收中断，
@@ -163,7 +157,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     if ((huart->ErrorCode & HAL_UART_ERROR_ORE) != 0U)
         __HAL_UART_CLEAR_OREFLAG(huart);
 
-    HAL_UART_Receive_IT(huart, &rx_byte, 1);
+    HAL_UART_Receive_DMA(huart, &rx_byte, 1);
 }
 
 BluetoothCmd Bluetooth_GetCommand(void)
@@ -184,4 +178,3 @@ void Bluetooth_SendString(const char *str)
      * 就算蓝牙没接上，超时返回也不会卡死程序 */
     HAL_UART_Transmit(&huart2, (const uint8_t *)str, (uint16_t)strlen(str), 50);
 }
-
