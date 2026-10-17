@@ -33,6 +33,7 @@
 #include "motor.h"
 #include "oled_software_i2c.h"
 #include "pid.h"
+#include "ultrasonic.h"
 
 /* USER CODE END Includes */
 
@@ -72,6 +73,8 @@ void SystemClock_Config(void);
 static PID_Controller pos_pid;
 static PID_Controller speed_left_pid;
 static PID_Controller speed_right_pid;
+
+// Ultrasonic_Reading distance[ULTRASONIC_SENSOR_COUNT];
 
 /* USER CODE END 0 */
 
@@ -117,6 +120,7 @@ int main(void)
   Motor_Init();
   Encoder_Init();
   OLED_Init();
+  Ultrasonic_Init();
 
   HAL_TIM_Base_Start_IT(&htim1);
 
@@ -186,6 +190,21 @@ int main(void)
     //         Bluetooth_SendString("ERR\r\n");
     //         break;
     //     }
+    // }
+
+    /* ---------- 超声波模块使用示例 ---------- */
+    // Ultrasonic_Process();
+    // Ultrasonic_GetAll(distance);
+
+    // if (distance[ULTRASONIC_CENTER].valid)
+    // {
+    //   uint16_t center_mm = distance[ULTRASONIC_CENTER].filtered_mm;
+    //   /* 使用 center_mm 做避障判断 */
+    // }
+
+    // if (distance[ULTRASONIC_LEFT].valid)
+    // {
+    //   uint16_t left_mm = distance[ULTRASONIC_LEFT].filtered_mm;
     // }
   }
   /* USER CODE END 3 */

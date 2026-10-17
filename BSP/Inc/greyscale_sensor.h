@@ -2,7 +2,6 @@
 #define GREYSCALE_SENSOR_H
 
 #include "main.h"
-#include "delay_us.h"
 
 #define GRAYSCALE_SENSOR_CHANNELS 8
 

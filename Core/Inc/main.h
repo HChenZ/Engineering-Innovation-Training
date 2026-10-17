@@ -67,6 +67,7 @@ void Error_Handler(void);
 #define TRIG3_GPIO_Port GPIOA
 #define ECHO3_Pin GPIO_PIN_5
 #define ECHO3_GPIO_Port GPIOA
+#define ECHO3_EXTI_IRQn EXTI9_5_IRQn
 #define Encoder_RightA_Pin GPIO_PIN_6
 #define Encoder_RightA_GPIO_Port GPIOA
 #define Encoder_RightB_Pin GPIO_PIN_7
@@ -91,10 +92,12 @@ void Error_Handler(void);
 #define TRIG1_GPIO_Port GPIOA
 #define ECHO1_Pin GPIO_PIN_9
 #define ECHO1_GPIO_Port GPIOA
+#define ECHO1_EXTI_IRQn EXTI9_5_IRQn
 #define TRIG2_Pin GPIO_PIN_10
 #define TRIG2_GPIO_Port GPIOA
 #define ECHO2_Pin GPIO_PIN_11
 #define ECHO2_GPIO_Port GPIOA
+#define ECHO2_EXTI_IRQn EXTI15_10_IRQn
 #define OLED_SCL_Pin GPIO_PIN_12
 #define OLED_SCL_GPIO_Port GPIOA
 #define OLED_SDA_Pin GPIO_PIN_5

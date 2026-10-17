@@ -1,4 +1,5 @@
 #include "greyscale_sensor.h"
+#include "delay_us.h"
 
 // 选择传感器通道
 static void Select_Channel(uint8_t channel)
