@@ -32,6 +32,7 @@
 #include "led.h"
 #include "motor.h"
 #include "oled_software_i2c.h"
+#include "pid.h"
 
 /* USER CODE END Includes */
 
@@ -42,6 +43,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define TRACK_BASE_SPEED 25.0f
+#define PID_PERIOD_S 0.01f
 
 /* USER CODE END PD */
 
@@ -64,6 +68,10 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static PID_Controller pos_pid;
+static PID_Controller speed_left_pid;
+static PID_Controller speed_right_pid;
 
 /* USER CODE END 0 */
 
@@ -111,6 +119,13 @@ int main(void)
   OLED_Init();
 
   HAL_TIM_Base_Start_IT(&htim1);
+
+  PID_Init(&pos_pid, 0.07f, 0.5f, 0.0f, -40.0f, 40.0f);
+  PID_SetIntegralLimit(&pos_pid, -250.0f, 250.0f);
+  PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f);
+  PID_SetIntegralLimit(&speed_left_pid, -150.0f, 150.0f);
+  PID_Init(&speed_right_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f);
+  PID_SetIntegralLimit(&speed_right_pid, -150.0f, 150.0f);
 
   /* USER CODE END 2 */
 
