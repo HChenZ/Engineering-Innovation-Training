@@ -5,7 +5,7 @@
 
 #define GRAYSCALE_SENSOR_CHANNELS 8
 
-void Grayscale_Sensor_Read_All(uint16_t* sensor_values);
-uint16_t Grayscale_Sensor_Read_Single(uint8_t channel);
+uint8_t Grayscale_Sensor_Read_All(void);
+uint8_t Grayscale_Sensor_Read_Single(uint8_t channel);
 
 #endif

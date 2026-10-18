@@ -10,25 +10,29 @@ static void Select_Channel(uint8_t channel)
 }
 
 // 读取 OUT 引脚的值
-static uint16_t Read_OUT_Value(void)
+static uint8_t Read_OUT_Value(void)
 {
-    return HAL_GPIO_ReadPin(Track_Out_GPIO_Port, Track_Out_Pin) == GPIO_PIN_SET ? 0 : 1;
+    return (HAL_GPIO_ReadPin(Track_Out_GPIO_Port, Track_Out_Pin) == GPIO_PIN_SET) ? 0 : 1;
 }
 
-// 读取所有 8 个通道的灰度值
-void Grayscale_Sensor_Read_All(uint16_t* sensor_values)
+// 读取所有 8 个通道，bit i 对应第 i 个通道的 0/1 值
+uint8_t Grayscale_Sensor_Read_All(void)
 {
     uint8_t i;
+    uint8_t sensor_values = 0;
+
     for (i = 0; i < GRAYSCALE_SENSOR_CHANNELS; i++)
     {
         Select_Channel(i);
         Delay_us(50);
-        sensor_values[i] = Read_OUT_Value();
+        sensor_values |= (uint8_t)(Read_OUT_Value() << i);
     }
+
+    return sensor_values;
 }
 
 // 读取单个指定通道的灰度值
-uint16_t Grayscale_Sensor_Read_Single(uint8_t channel)
+uint8_t Grayscale_Sensor_Read_Single(uint8_t channel)
 {
     if (channel >= GRAYSCALE_SENSOR_CHANNELS)
     {
