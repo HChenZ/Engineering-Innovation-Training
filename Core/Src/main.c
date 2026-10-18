@@ -33,6 +33,7 @@
 #include "motor.h"
 #include "oled_software_i2c.h"
 #include "pid.h"
+#include "tracking.h"
 #include "ultrasonic.h"
 
 /* USER CODE END Includes */
