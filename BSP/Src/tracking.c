@@ -5,15 +5,14 @@
 
 static const int8_t track_weight[8] = {-5, -4, -2, -1, 1, 2, 4, 5};
 
-int16_t Track_GetPosition(void)
+int16_t Track_GetPositionFromBitmap(uint8_t bitmap)
 {
-    uint8_t bitmap = Grayscale_Sensor_Read_All();
     int32_t sum_weight = 0;
     int32_t sum_amount = 0;
     uint8_t i;
 
     if (bitmap == 0)
-        return 0; /* 丢线：无有效位置，直接给 0 */
+        return 0; /* 丢线：无有效位置，调用者需结合 bitmap 判断 */
 
     for (i = 0; i < GRAYSCALE_SENSOR_CHANNELS; i++)
     {
@@ -27,9 +26,13 @@ int16_t Track_GetPosition(void)
     return (int16_t)((sum_weight * TRACK_POS_MAX) / (5 * sum_amount));
 }
 
-uint8_t Track_CountConsecutiveBlack(void)
+int16_t Track_GetPosition(void)
 {
-    uint8_t bitmap = Grayscale_Sensor_Read_All();
+    return Track_GetPositionFromBitmap(Grayscale_Sensor_Read_All());
+}
+
+uint8_t Track_CountConsecutiveBlackFromBitmap(uint8_t bitmap)
+{
     uint8_t current_count = 0;
     uint8_t max_count = 0;
     uint8_t i;
@@ -47,4 +50,9 @@ uint8_t Track_CountConsecutiveBlack(void)
     }
 
     return max_count;
+}
+
+uint8_t Track_CountConsecutiveBlack(void)
+{
+    return Track_CountConsecutiveBlackFromBitmap(Grayscale_Sensor_Read_All());
 }

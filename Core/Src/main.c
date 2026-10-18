@@ -41,6 +41,13 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef enum
+{
+  CAR_STATE_STOPPED = 0,
+  CAR_STATE_RUNNING,
+  CAR_STATE_FINISHED
+} CarState;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -48,6 +55,7 @@
 
 #define TRACK_BASE_SPEED 25.0f
 #define PID_PERIOD_S 0.01f
+#define TRACK_ALL_BLACK_BITMAP 0xFFU
 
 /* USER CODE END PD */
 
@@ -66,6 +74,10 @@
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
+static void Car_RequestStart(void);
+static void Car_RequestStop(void);
+static uint8_t Car_CanStart(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -75,7 +87,13 @@ static PID_Controller pos_pid;
 static PID_Controller speed_left_pid;
 static PID_Controller speed_right_pid;
 
-// Ultrasonic_Reading distance[ULTRASONIC_SENSOR_COUNT];
+static volatile uint8_t car_state = CAR_STATE_STOPPED;
+static volatile uint8_t car_start_pending = 0U;
+static volatile uint8_t car_stop_pending = 0U;
+static volatile uint8_t car_endpoint_armed = 0U;
+
+/* 仅在 TIM1 中断中访问。 */
+static uint8_t line_is_lost = 1U;
 
 /* USER CODE END 0 */
 
@@ -123,14 +141,14 @@ int main(void)
   OLED_Init();
   Ultrasonic_Init();
 
-  HAL_TIM_Base_Start_IT(&htim1);
-
-  PID_Init(&pos_pid, 0.07f, 0.5f, 0.0f, -40.0f, 40.0f);
+  PID_Init(&pos_pid, 0.07f, 0.0f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
   PID_SetIntegralLimit(&pos_pid, -250.0f, 250.0f);
-  PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f);
+  PID_Init(&speed_left_pid, 3.0f, 0.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_left_pid, -150.0f, 150.0f);
-  PID_Init(&speed_right_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f);
+  PID_Init(&speed_right_pid, 3.0f, 0.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_right_pid, -150.0f, 150.0f);
+
+  HAL_TIM_Base_Start_IT(&htim1);
 
   /* USER CODE END 2 */
 
@@ -142,71 +160,37 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ---------- 编码器使用示例（在定时中断中调用） ---------- */
-    // int16_t speed_left = Encoder_GetSpeed(&encoder_left);
-    // int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+    /* 超声波驱动是非阻塞状态机，主循环需要尽可能频繁地调用。 */
+    Ultrasonic_Process();
 
-    /* ---------- 蓝牙使用示例：启动 / 停车 ---------- */
-    // BluetoothCmd bt_cmd;
+    BluetoothCmd bt_cmd;
 
-    // while ((bt_cmd = Bluetooth_GetCommand()) != BT_CMD_NONE)
-    // {
-    //     switch (bt_cmd)
-    //     {
-    //     case BT_CMD_START: /* 手机发 start / s / 1 */
-    //         /* !g_run：待机中重新起步；g_stop：终点停车后想再跑一轮
-    //          * （终点停车时 g_run 仍然是 1，所以必须把 g_stop 也算进来，
-    //          *   否则这里会走下面的 "OK RUNNING" 分支，车永远起不来） */
-    //         if (!g_run || g_stop)
-    //         {
-    //             g_stop = 0; /* 解除终点停车 */
-    //             /* 清 PID 内部状态，避免上次跑完的积分残留让车"窜"一下 */
-    //             PID_Reset(&pid_pos);
-    //             PID_Reset(&pid_speed_l);
-    //             PID_Reset(&pid_speed_r);
-    //             /* 这里不直接使能电机：本轮往下就会调用 Avoid_Update()，
-    //              * 先用最新距离判一次——车头已经贴障碍物就先刹车/绕行，
-    //              * 不会带着速度往前冲（停车期间距离一直在更新） */
-    //             g_run = 1;
-    //             car_cmd_text = "CMD:START";
-    //             Car_ShowAll(); /* 立刻刷新状态行 / LED */
-    //             Bluetooth_SendString("OK START\r\n");
-    //         }
-    //         else
-    //         {
-    //             Bluetooth_SendString("OK RUNNING\r\n"); /* 已经在跑，忽略重复命令 */
-    //         }
-    //         break;
+    while ((bt_cmd = Bluetooth_GetCommand()) != BT_CMD_NONE)
+    {
+      switch (bt_cmd)
+      {
+      case BT_CMD_START:
+        if (Car_CanStart())
+        {
+          Car_RequestStart();
+          Bluetooth_SendString("OK START\r\n");
+        }
+        else
+        {
+          Bluetooth_SendString("OK RUNNING\r\n");
+        }
+        break;
 
-    //     case BT_CMD_STOP: /* 手机发 stop / p / 0 */
-    //         g_run = 0;
-    //         g_track_enable = 0;
-    //         Motor_BrakeAll();
-    //         car_cmd_text = "CMD:STOP";
-    //         Car_ShowAll();
-    //         Bluetooth_SendString("OK STOP\r\n");
-    //         break;
+      case BT_CMD_STOP:
+        Car_RequestStop();
+        Bluetooth_SendString("OK STOP\r\n");
+        break;
 
-    //     default: /* BT_CMD_UNKNOWN */
-    //         Bluetooth_SendString("ERR\r\n");
-    //         break;
-    //     }
-    // }
-
-    /* ---------- 超声波模块使用示例 ---------- */
-    // Ultrasonic_Process();
-    // Ultrasonic_GetAll(distance);
-
-    // if (distance[ULTRASONIC_CENTER].valid)
-    // {
-    //   uint16_t center_mm = distance[ULTRASONIC_CENTER].filtered_mm;
-    //   /* 使用 center_mm 做避障判断 */
-    // }
-
-    // if (distance[ULTRASONIC_LEFT].valid)
-    // {
-    //   uint16_t left_mm = distance[ULTRASONIC_LEFT].filtered_mm;
-    // }
+      default:
+        Bluetooth_SendString("ERR\r\n");
+        break;
+      }
+    }
   }
   /* USER CODE END 3 */
 }
@@ -252,10 +236,149 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+static void Car_ResetControllers(void)
+{
+  PID_Reset(&pos_pid);
+  PID_Reset(&speed_left_pid);
+  PID_Reset(&speed_right_pid);
+  line_is_lost = 1U;
+}
+
+static void Car_RequestStart(void)
+{
+  car_stop_pending = 0U;
+  car_start_pending = 1U;
+}
+
+static void Car_RequestStop(void)
+{
+  car_start_pending = 0U;
+  car_stop_pending = 1U;
+}
+
+static uint8_t Car_CanStart(void)
+{
+  uint8_t state = car_state;
+
+  return (uint8_t)(((state == CAR_STATE_STOPPED) || (state == CAR_STATE_FINISHED)) && (car_start_pending == 0U) && (car_stop_pending == 0U));
+}
+
+static void Car_BeginRun(void)
+{
+  Car_ResetControllers();
+  car_endpoint_armed = 0U;
+  car_state = CAR_STATE_RUNNING;
+}
+
+static void Car_StopNow(void)
+{
+  Car_ResetControllers();
+  car_endpoint_armed = 0U;
+  car_state = CAR_STATE_STOPPED;
+  Motor_BrakeAll();
+}
+
+static void Car_Finish(void)
+{
+  Car_ResetControllers();
+  car_endpoint_armed = 0U;
+  car_state = CAR_STATE_FINISHED;
+  Motor_BrakeAll();
+}
+
+static int16_t Motor_DutyFromFloat(float duty)
+{
+  if (duty > 100.0f)
+  {
+    return 100;
+  }
+  if (duty < -100.0f)
+  {
+    return -100;
+  }
+
+  return (int16_t)((duty >= 0.0f) ? (duty + 0.5f) : (duty - 0.5f));
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM1)
   {
+    /* 每周期都采样，停车期间也不会累积编码器计数差。 */
+    int16_t speed_left = Encoder_GetSpeed(&encoder_left);
+    int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+
+    if (car_stop_pending != 0U)
+    {
+      car_start_pending = 0U;
+      car_stop_pending = 0U;
+      Car_StopNow();
+      return;
+    }
+
+    if (car_start_pending != 0U)
+    {
+      car_start_pending = 0U;
+      Car_BeginRun();
+    }
+
+    if (car_state != CAR_STATE_RUNNING)
+    {
+      Motor_BrakeAll();
+      return;
+    }
+
+    uint8_t bitmap = Grayscale_Sensor_Read_All();
+
+    /*
+     * 启动后先等待出现非全黑的一帧，再武装终点检测。
+     * 这样停在终点线上发 start 不会被下一个周期立即停车。
+     */
+    if (bitmap != TRACK_ALL_BLACK_BITMAP)
+    {
+      car_endpoint_armed = 1U;
+    }
+    else if (car_endpoint_armed != 0U)
+    {
+      Car_Finish();
+      return;
+    }
+
+    float steer = 0.0f;
+
+    if (bitmap == 0U)
+    {
+      if (line_is_lost == 0U)
+      {
+        PID_Reset(&pos_pid);
+      }
+      line_is_lost = 1U;
+    }
+    else
+    {
+      int16_t position = Track_GetPositionFromBitmap(bitmap);
+
+      if (line_is_lost != 0U)
+      {
+        PID_Reset(&pos_pid);
+      }
+      line_is_lost = 0U;
+
+      /*
+       * 黑线偏右时位置为正，正转向差使左轮快、右轮慢，车向右修正；
+       * 黑线偏左时位置为负，负转向差使右轮快、左轮慢。
+       */
+      steer = PID_UpdateError(&pos_pid, (float)position, PID_PERIOD_S);
+    }
+
+    float left_target = TRACK_BASE_SPEED + steer;
+    float right_target = TRACK_BASE_SPEED - steer;
+
+    float left_output = PID_Update(&speed_left_pid, left_target, (float)speed_left, PID_PERIOD_S);
+    float right_output = PID_Update(&speed_right_pid, right_target, (float)speed_right, PID_PERIOD_S);
+
+    Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, Motor_DutyFromFloat(left_output));
+    Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, Motor_DutyFromFloat(right_output));
   }
 }
 
