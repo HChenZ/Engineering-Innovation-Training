@@ -4,15 +4,15 @@
 // 选择传感器通道
 static void Select_Channel(uint8_t channel)
 {
-    HAL_GPIO_WritePin(Track_AD0_GPIO_Port, Track_AD0_Pin, ((channel >> 0) & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit0 -> AD0
-    HAL_GPIO_WritePin(Track_AD1_GPIO_Port, Track_AD1_Pin, ((channel >> 1) & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit1 -> AD1
-    HAL_GPIO_WritePin(Track_AD2_GPIO_Port, Track_AD2_Pin, ((channel >> 2) & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit2 -> AD2
+    HAL_GPIO_WritePin(Track_AD0_GPIO_Port, Track_AD0_Pin, (channel & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit0 -> AD0
+    HAL_GPIO_WritePin(Track_AD1_GPIO_Port, Track_AD1_Pin, (channel & 0x02) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit1 -> AD1
+    HAL_GPIO_WritePin(Track_AD2_GPIO_Port, Track_AD2_Pin, (channel & 0x04) ? GPIO_PIN_SET : GPIO_PIN_RESET); // bit2 -> AD2
 }
 
 // 读取 OUT 引脚的值
 static uint8_t Read_OUT_Value(void)
 {
-    return (HAL_GPIO_ReadPin(Track_Out_GPIO_Port, Track_Out_Pin) == GPIO_PIN_SET) ? 0 : 1;
+    return (HAL_GPIO_ReadPin(Track_Out_GPIO_Port, Track_Out_Pin) == GPIO_PIN_SET) ? 1 : 0;
 }
 
 // 读取所有 8 个通道，bit i 对应第 i 个通道的 0/1 值
