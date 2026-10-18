@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "avoidance.h"
 #include "bluetooth.h"
 #include "delay_us.h"
 #include "encoder.h"
@@ -53,7 +54,7 @@ typedef enum
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define TRACK_BASE_SPEED 25.0f
+#define TRACK_BASE_SPEED 35.0f
 #define PID_PERIOD_S 0.01f
 #define TRACK_ALL_BLACK_BITMAP 0xFFU
 
@@ -77,6 +78,7 @@ void SystemClock_Config(void);
 static void Car_RequestStart(void);
 static void Car_RequestStop(void);
 static uint8_t Car_CanStart(void);
+static void Car_PrepareStart(void);
 
 /* USER CODE END PFP */
 
@@ -94,6 +96,14 @@ static volatile uint8_t car_endpoint_armed = 0U;
 
 /* 仅在 TIM1 中断中访问。 */
 static uint8_t line_is_lost = 1U;
+static uint8_t avoidance_was_active = 0U;
+
+volatile float left_output;
+volatile float right_output;
+volatile int16_t speed_left;
+volatile int16_t speed_right;
+volatile uint8_t bitmap;
+static uint32_t last_oled_tick = 0U;
 
 /* USER CODE END 0 */
 
@@ -140,12 +150,13 @@ int main(void)
   Encoder_Init();
   OLED_Init();
   Ultrasonic_Init();
+  Avoidance_Init();
 
-  PID_Init(&pos_pid, 0.07f, 0.0f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
+  PID_Init(&pos_pid, 0.07f, 0.5f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
   PID_SetIntegralLimit(&pos_pid, -250.0f, 250.0f);
-  PID_Init(&speed_left_pid, 3.0f, 0.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
+  PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_left_pid, -150.0f, 150.0f);
-  PID_Init(&speed_right_pid, 3.0f, 0.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
+  PID_Init(&speed_right_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_right_pid, -150.0f, 150.0f);
 
   HAL_TIM_Base_Start_IT(&htim1);
@@ -172,6 +183,7 @@ int main(void)
       case BT_CMD_START:
         if (Car_CanStart())
         {
+          Car_PrepareStart();
           Car_RequestStart();
           Bluetooth_SendString("OK START\r\n");
         }
@@ -190,6 +202,27 @@ int main(void)
         Bluetooth_SendString("ERR\r\n");
         break;
       }
+    }
+
+    if (car_state == CAR_STATE_RUNNING)
+    {
+      Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
+      uint8_t current_bitmap = bitmap;
+
+      Ultrasonic_GetAll(readings);
+      Avoidance_ProcessSensors(readings, current_bitmap, Track_GetPositionFromBitmap(current_bitmap));
+    }
+
+    if ((HAL_GetTick() - last_oled_tick) >= 200U)
+    {
+      last_oled_tick = HAL_GetTick();
+
+      OLED_ShowSignedNum(0, 0, (int32_t)left_output, 4, 8);
+      OLED_ShowSignedNum(0, 1, (int32_t)right_output, 4, 8);
+      OLED_ShowSignedNum(0, 2, speed_left, 6, 8);
+      OLED_ShowSignedNum(0, 3, speed_right, 6, 8);
+      OLED_ShowNum(0, 4, bitmap, 3, 8);
+      OLED_ShowNum(0, 5, Avoidance_GetState(), 1, 8);
     }
   }
   /* USER CODE END 3 */
@@ -242,6 +275,7 @@ static void Car_ResetControllers(void)
   PID_Reset(&speed_left_pid);
   PID_Reset(&speed_right_pid);
   line_is_lost = 1U;
+  avoidance_was_active = 0U;
 }
 
 static void Car_RequestStart(void)
@@ -263,6 +297,22 @@ static uint8_t Car_CanStart(void)
   return (uint8_t)(((state == CAR_STATE_STOPPED) || (state == CAR_STATE_FINISHED)) && (car_start_pending == 0U) && (car_stop_pending == 0U));
 }
 
+static void Car_PrepareStart(void)
+{
+  Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
+  uint8_t start_bitmap = Grayscale_Sensor_Read_All();
+
+  /*
+   * 发车前用最新超声波和灰度状态判断一次，避免已经进入危险距离时
+   * 仍先按正常循迹加速。
+   */
+  bitmap = start_bitmap;
+  Ultrasonic_GetAll(readings);
+
+  Avoidance_Reset();
+  Avoidance_ProcessSensors(readings, start_bitmap, Track_GetPositionFromBitmap(start_bitmap));
+}
+
 static void Car_BeginRun(void)
 {
   Car_ResetControllers();
@@ -275,6 +325,7 @@ static void Car_StopNow(void)
   Car_ResetControllers();
   car_endpoint_armed = 0U;
   car_state = CAR_STATE_STOPPED;
+  Avoidance_Reset();
   Motor_BrakeAll();
 }
 
@@ -283,6 +334,7 @@ static void Car_Finish(void)
   Car_ResetControllers();
   car_endpoint_armed = 0U;
   car_state = CAR_STATE_FINISHED;
+  Avoidance_Reset();
   Motor_BrakeAll();
 }
 
@@ -305,8 +357,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM1)
   {
     /* 每周期都采样，停车期间也不会累积编码器计数差。 */
-    int16_t speed_left = Encoder_GetSpeed(&encoder_left);
-    int16_t speed_right = Encoder_GetSpeed(&encoder_right);
+    speed_left = -Encoder_GetSpeed(&encoder_left);
+    speed_right = Encoder_GetSpeed(&encoder_right);
 
     if (car_stop_pending != 0U)
     {
@@ -328,7 +380,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       return;
     }
 
-    uint8_t bitmap = Grayscale_Sensor_Read_All();
+    bitmap = Grayscale_Sensor_Read_All();
 
     /*
      * 启动后先等待出现非全黑的一帧，再武装终点检测。
@@ -344,38 +396,57 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       return;
     }
 
+    Avoidance_Control avoidance_control = Avoidance_UpdateControl(bitmap, (float)speed_left, (float)speed_right);
+    float base_speed;
     float steer = 0.0f;
 
-    if (bitmap == 0U)
+    if (avoidance_control.use_line_pid != 0U)
     {
-      if (line_is_lost == 0U)
+      if (avoidance_was_active != 0U)
       {
         PID_Reset(&pos_pid);
+        line_is_lost = 1U;
       }
-      line_is_lost = 1U;
+      avoidance_was_active = 0U;
+      base_speed = TRACK_BASE_SPEED;
+
+      if (bitmap == 0U)
+      {
+        if (line_is_lost == 0U)
+        {
+          PID_Reset(&pos_pid);
+        }
+        line_is_lost = 1U;
+      }
+      else
+      {
+        int16_t position = Track_GetPositionFromBitmap(bitmap);
+
+        if (line_is_lost != 0U)
+        {
+          PID_Reset(&pos_pid);
+        }
+        line_is_lost = 0U;
+
+        /*
+         * 黑线偏右时位置为正，正转向差使左轮快、右轮慢，车向右修正；
+         * 黑线偏左时位置为负，负转向差使右轮快、左轮慢。
+         */
+        steer = PID_UpdateError(&pos_pid, (float)position, PID_PERIOD_S);
+      }
     }
     else
     {
-      int16_t position = Track_GetPositionFromBitmap(bitmap);
-
-      if (line_is_lost != 0U)
-      {
-        PID_Reset(&pos_pid);
-      }
-      line_is_lost = 0U;
-
-      /*
-       * 黑线偏右时位置为正，正转向差使左轮快、右轮慢，车向右修正；
-       * 黑线偏左时位置为负，负转向差使右轮快、左轮慢。
-       */
-      steer = PID_UpdateError(&pos_pid, (float)position, PID_PERIOD_S);
+      avoidance_was_active = 1U;
+      base_speed = avoidance_control.base_speed;
+      steer = avoidance_control.steer;
     }
 
-    float left_target = TRACK_BASE_SPEED + steer;
-    float right_target = TRACK_BASE_SPEED - steer;
+    float left_target = base_speed + steer;
+    float right_target = base_speed - steer;
 
-    float left_output = PID_Update(&speed_left_pid, left_target, (float)speed_left, PID_PERIOD_S);
-    float right_output = PID_Update(&speed_right_pid, right_target, (float)speed_right, PID_PERIOD_S);
+    left_output = PID_Update(&speed_left_pid, left_target, (float)speed_left, PID_PERIOD_S);
+    right_output = PID_Update(&speed_right_pid, right_target, (float)speed_right, PID_PERIOD_S);
 
     Motor_SetSpeed(MOTOR_LEFT, MOTOR_START, Motor_DutyFromFloat(left_output));
     Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, Motor_DutyFromFloat(right_output));
