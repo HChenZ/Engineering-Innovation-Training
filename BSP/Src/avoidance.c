@@ -16,6 +16,7 @@ static int16_t last_nonzero_position = 0;
 
 /* 只有 TIM1 中断修改。 */
 static uint16_t turn_out_ticks = 0U;
+static uint16_t turn_in_ticks = 0U;
 static float turn_out_differential = 0.0f;
 static float extra_turn_travel = 0.0f;
 static uint16_t extra_turn_check_ticks = 0U;
@@ -64,6 +65,7 @@ void Avoidance_Reset(void)
     locked_sensor_mask = 0U;
     last_nonzero_position = 0;
     turn_out_ticks = 0U;
+    turn_in_ticks = 0U;
     turn_out_differential = 0.0f;
     extra_turn_travel = 0.0f;
     extra_turn_check_ticks = 0U;
@@ -207,6 +209,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             (turn_out_ticks >= AVOIDANCE_OUT_TIMEOUT_TICKS))
         {
             avoidance_state = AVOIDANCE_STATE_TURN_IN;
+            turn_in_ticks = 0U;      /* 保底转圈时间从进入转入段这一拍重新数 */
             steer_sign = -steer_sign;
         }
 
@@ -220,9 +223,26 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
     {
         uint8_t black_count = Track_CountBlackFromBitmap(bitmap);
         uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
+        uint8_t line_detected;
 
-        /* 按约定不使用丢线保护、最小转入时间等额外条件。 */
-        if ((black_count >= 2U) && (black_count == consecutive_black))
+        /* 记"已经在转入段转了多少拍"（保底转圈时间用，每拍 10ms）。 */
+        if (turn_in_ticks < 0xFFFFU)
+        {
+            turn_in_ticks++;
+        }
+
+        /* 黑线必须是一整段连续区域（≥2 个黑点），才算真的抓到了线。 */
+        line_detected = (uint8_t)((black_count >= 2U) && (black_count == consecutive_black));
+
+        /*
+         * 保底转圈时间没到之前【只转、不判线】（见 avoid.h 里
+         * AVOIDANCE_TURN_IN_MIN_TICKS 的说明）：
+         * 弯道旁的黑色印刷字/深色块同样会被读成"连续黑"，如果不设这道闸，
+         * 车会把它当黑线、提前结束避障、还没绕开障碍就交回循迹，然后彻底丢线。
+         *
+         * AVOIDANCE_TURN_IN_MIN_TICKS = 0 时，本判断恒成立，行为与改动前完全一致。
+         */
+        if ((turn_in_ticks >= AVOIDANCE_TURN_IN_MIN_TICKS) && (line_detected != 0U))
         {
             /* 黑线必须是一整段连续区域，才切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
