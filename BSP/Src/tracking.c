@@ -31,6 +31,22 @@ int16_t Track_GetPosition(void)
     return Track_GetPositionFromBitmap(Grayscale_Sensor_Read_All());
 }
 
+uint8_t Track_CountBlackFromBitmap(uint8_t bitmap)
+{
+    uint8_t count = 0;
+    uint8_t i;
+
+    for (i = 0; i < GRAYSCALE_SENSOR_CHANNELS; i++)
+    {
+        if ((bitmap & (1u << i)) != 0)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
 uint8_t Track_CountConsecutiveBlackFromBitmap(uint8_t bitmap)
 {
     uint8_t current_count = 0;

@@ -218,12 +218,13 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
+        uint8_t black_count = Track_CountBlackFromBitmap(bitmap);
         uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
 
         /* 按约定不使用丢线保护、最小转入时间等额外条件。 */
-        if (consecutive_black >= 2U)
+        if ((black_count >= 2U) && (black_count == consecutive_black))
         {
-            /* 保留原避障方向，立即切到第三段小弧线。 */
+            /* 黑线必须是一整段连续区域，才切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
             extra_turn_travel = 0.0f;
             extra_turn_check_ticks = 0U;

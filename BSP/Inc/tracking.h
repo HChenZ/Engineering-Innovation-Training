@@ -10,6 +10,9 @@
 int16_t Track_GetPositionFromBitmap(uint8_t bitmap);
 int16_t Track_GetPosition(void);
 
+/* 返回 bitmap 中检测到黑线的探头总数。 */
+uint8_t Track_CountBlackFromBitmap(uint8_t bitmap);
+
 /* 返回 bitmap 中最长的一段连续黑点数量。 */
 uint8_t Track_CountConsecutiveBlackFromBitmap(uint8_t bitmap);
 uint8_t Track_CountConsecutiveBlack(void);
