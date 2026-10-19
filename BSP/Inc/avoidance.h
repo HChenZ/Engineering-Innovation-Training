@@ -43,15 +43,17 @@
 #define AVOIDANCE_OUT_TIMEOUT_TICKS 75U
 #endif
 
-/* 第三段小弧线：使用更小的速度差和独立的编码器累计差速目标。 */
+/* 第三段小弧线：使用更小的速度差 */
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF
 #define AVOIDANCE_EXTRA_SPEED_DIFF 5.0f
 #endif
 
-#ifndef AVOIDANCE_EXTRA_TURN_DIFF_COUNTS
-#define AVOIDANCE_EXTRA_TURN_DIFF_COUNTS 190.0f
+/* 灰度第 3~4 路（中间两路）任意一路检测到黑线时结束第三段 */
+#ifndef AVOIDANCE_MIDDLE_FOUR_MASK
+#define AVOIDANCE_MIDDLE_FOUR_MASK 0x18U
 #endif
 
+/* 安全兜底：正常应由中间四路结束，超过该时间则强制交回循迹 */
 #ifndef AVOIDANCE_EXTRA_TIMEOUT_TICKS
 #define AVOIDANCE_EXTRA_TIMEOUT_TICKS 30U
 #endif

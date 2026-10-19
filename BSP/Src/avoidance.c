@@ -18,8 +18,6 @@ static int16_t last_nonzero_position = 0;
 static uint16_t turn_out_ticks = 0U;
 static float turn_out_differential = 0.0f;
 static uint16_t extra_turn_ticks = 0U;
-static float extra_turn_differential = 0.0f;
-static uint8_t extra_turn_skip_accumulation = 0U;
 
 static uint8_t SensorReadingFresh(const Ultrasonic_Reading *reading)
 {
@@ -65,8 +63,6 @@ void Avoidance_Reset(void)
     turn_out_ticks = 0U;
     turn_out_differential = 0.0f;
     extra_turn_ticks = 0U;
-    extra_turn_differential = 0.0f;
-    extra_turn_skip_accumulation = 0U;
 }
 
 void Avoidance_Init(void)
@@ -219,14 +215,9 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
         /* 按约定不使用丢线保护、最小转入时间等额外条件。 */
         if (Track_CountConsecutiveBlackFromBitmap(bitmap) >= 2U)
         {
-            /*
-             * 保留原避障方向，立即切到第三段小弧线。
-             * 当前速度反馈属于第二段，因此本周期不参与第三段差速累计。
-             */
+            /* 保留原避障方向，立即切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
             extra_turn_ticks = 0U;
-            extra_turn_differential = 0.0f;
-            extra_turn_skip_accumulation = 1U;
         }
         else
         {
@@ -240,36 +231,26 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_EXTRA_TURN)
     {
-        steer_sign = DirectionSign(active_direction);
-
-        if (extra_turn_skip_accumulation != 0U)
-        {
-            extra_turn_skip_accumulation = 0U;
-        }
-        else
-        {
-            extra_turn_differential += left_speed - right_speed;
-        }
-
-        if (extra_turn_ticks < 0xFFFFU)
-        {
-            extra_turn_ticks++;
-        }
-
-        if (((steer_sign * extra_turn_differential) >= AVOIDANCE_EXTRA_TURN_DIFF_COUNTS) ||
+        /* 中间四路中任意一路检测到黑线，当周期立即交回循迹。 */
+        if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) ||
             (extra_turn_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
         {
             avoidance_state = AVOIDANCE_STATE_IDLE;
             active_direction = AVOIDANCE_DIRECTION_NONE;
             pending_direction = AVOIDANCE_DIRECTION_NONE;
             waiting_for_line_direction = 0U;
-            extra_turn_skip_accumulation = 0U;
             return control;
         }
 
+        steer_sign = DirectionSign(active_direction);
         control.use_line_pid = 0U;
         control.base_speed = AVOIDANCE_BASE_SPEED;
         control.steer = steer_sign * AVOIDANCE_EXTRA_SPEED_DIFF;
+
+        if (extra_turn_ticks < 0xFFFFU)
+        {
+            extra_turn_ticks++;
+        }
         return control;
     }
 
