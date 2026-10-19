@@ -22,7 +22,7 @@
 typedef enum
 {
     HCSR04_LEFT = 0, /* U4：车头左侧，探头向外斜 */
-    HCSR04_CENTER,   /* U2：车头正中（当前未装，见 avoid.h 的 AVOID_USE_CENTER） */
+    HCSR04_CENTER,   /* U2：车头正中（开关见 avoid.h 的 AVOID_USE_CENTER） */
     HCSR04_RIGHT,    /* U1：车头右侧，探头向外斜 */
     HCSR04_ID_COUNT
 } HCSR04_ID;

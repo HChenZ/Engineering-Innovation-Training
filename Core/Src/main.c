@@ -30,6 +30,8 @@
 #include "avoid.h"
 #include "track.h"
 #include "pid.h"
+#include "odom.h"
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -43,7 +45,6 @@
 /* 目标直行速度（单位：脉冲/10ms，取决于车速，需实车标定）
  * 例：车轮输出轴 1 圈/秒 ≈ 1040 脉冲/秒 ≈ 10.4 脉冲/10ms */
 #define TRACK_SPEED_NORMAL 25   /* 正常循迹目标速度 */
-#define TRACK_SPEED_SLOW   10   /* 避障减速目标速度 */
 
 /* 电机一致性测试模式：
  *   1 = 不循迹、不避障，左右轮速度环各自闭环到相同目标速度，
@@ -56,29 +57,6 @@
  * 若某轮编码器方向反了（速度闭环下该轮会飞转），把对应项设为 1 取反 */
 #define ENC_LEFT_INVERT  1   /* 左轮已确认反了 */
 #define ENC_RIGHT_INVERT 0
-
-/* ==================== 抓线软启动（治"碰到线抖一下就丢"）====================
- * 现象：避障结束交回循迹、或者丢线很久之后重新压到线时，
- *       车会"猛地一抖"把线甩掉，然后又丢线去转圈找。
- *
- * 原因：位置环是纯 P。车重新压到线时，线往往在传感器排的最边上，
- *       偏差值直接顶到满量程 -> turn 立刻顶到限幅（±30）
- *       -> 内侧轮目标速度变成 0 甚至反向 -> 车一把猛打，线就被甩掉了。
- *
- * 办法：这些时刻把 turn 限幅压小一段时间，让车"顺着线慢慢拧过来"。
- *       两个条件都会触发软启动：
- *         a) 避障刚把控制权交回来；
- *         b) 连续丢线超过 TRACK_SOFT_LOST_MIN_MS 之后重新抓到线
- *            （故意留一个下限，避免过弯时闪一下丢线也触发，那样弯道会变钝）。 */
-/* ⚠ 现在设成 0（关闭）：软启动的作用已经被下面的"偏差降速"取代了。
- *   软启动只是把转向压小，车的速度还是全速，所以它治的是"猛打"、治不了
- *   "高速甩线"；而偏差降速是把速度降下来（转弯半径跟着变小），
- *   根子上解决了"来不及对正线就滑出传感器"。两者叠加反而会让
- *   交回循迹后的对正变得太肉 —— 实测就是这样。
- *   想再打开就把 350 填回去（配合 TRACK_SOFT_TURN_MAX 使用）。 */
-#define TRACK_SOFT_START_MS      0  /* 软启动持续多久（毫秒）；0 = 关闭这个功能 */
-#define TRACK_SOFT_TURN_MAX     18  /* 软启动期间转向限幅（脉冲/10ms，正常是 30） */
-#define TRACK_SOFT_LOST_MIN_MS 200  /* 丢线连续超过这么久才武装软启动 */
 
 /* ==================== 偏差降速（治"斜着放上去跟不上去"）====================
  * 现象：把车斜着（车头与线有夹角）放在线上再上电，它跟不上去。
@@ -138,6 +116,7 @@
 #define TRACK_ASSIST_MS    700   /* 交回循迹 / 重新抓到线之后，辅助项生效多久 */
 #define TRACK_ASSIST_GAIN  0.9f  /* 漂移率 -> 转向的增益；拧得太猛就降到 0.5 */
 #define TRACK_ASSIST_MAX      8  /* 辅助项本身的限幅（脉冲/10ms），防一把猛打 */
+#define TRACK_ASSIST_LOST_MIN_MS 200  /* 丢线超过这么久，重新压线时才开辅助窗口（闪一下丢线不算） */
 
 /* ==================== 大角度进入循迹对正（治"斜着切入跟不上去"）====================
  * 现象：避障结束后车大角度斜着切入线，传感器快速扫过线，循迹来不及对正就丢线。
@@ -146,10 +125,37 @@
  *
  * 对正：检测到后先停车，小角度转弯对正（朝偏差减小的方向转），
  *       然后接入循迹并临时增大Kp，让回正更果断。 */
-#define TRACK_ALIGN_ENABLE        1    /* 1 = 启用大角度对正；0 = 关闭 */
-#define TRACK_ALIGN_TURN_DEG     12    /* 对正转向角度（度），10-15度范围 */
+#define TRACK_ALIGN_ENABLE        0    /* 1 = 启用大角度对正；0 = 关闭
+                                        * ⚠ 已关掉：这段是"停车 100ms + 按避障方向固定转 20° +
+                                        *   再等 500ms"，方向完全没看线在哪，触发判据又很脆
+                                        *   （要在 100ms 内出现 -600 -> +600 的反向）。
+                                        *   交回循迹那一下被它拦下来，就是"回线之后先停一下、
+                                        *   再朝一个莫名其妙的方向拧一把、然后才走"。
+                                        *   现在这件事由 avoid.c 的"线上吸引项 + 刹停验证"
+                                        *   和下面的"接手爬坡"一起做，方向来自线的实测偏差。 */
+#define TRACK_ALIGN_TURN_DEG     20    /* 对正转向角度（度） */
 #define TRACK_ALIGN_KP_BOOST    1.4f   /* 对正后临时Kp倍率（持续TRACK_ALIGN_KP_MS） */
 #define TRACK_ALIGN_KP_MS       500    /* 临时增大Kp的持续时间（毫秒） */
+#define TRACK_ALIGN_MAX_MS      600    /* 对正转向超时（轮子卡住时不死等） */
+#define TRACK_ALIGN_MIN_DEG       5    /* 有地图时：航向误差小于这个就不转，直接接循迹 */
+#define TRACK_ALIGN_MAX_DEG      60    /* 有地图时：一次对正最多转多少度 */
+
+/* ==================== 交回循迹的"接手爬坡" ====================
+ * 避障（或刹停验证）把控制权交给循迹的那一瞬间，原来是：
+ *   目标速度直接 25，位置环一上来就按满偏差给 turn（±40），
+ *   内侧轮目标速度 = 25 - 40 = -15 -> 变成倒转 -> 车在线上原地拧，
+ *   20cm 长的传感器排跟着横向甩出去，线一闪就没 —— "刚回线就丢线"。
+ *
+ * 现在交回后 TRACK_HANDOFF_MS 内：
+ *   a) 目标速度从 12 线性爬到 25；
+ *   b) 转向上限 = 当前车速 × TRACK_HANDOFF_TURN_RATIO（默认 1.0，内侧轮刚好停转不反转）。
+ * 车始终带着前进分量，线是"顺着"滑回车头中心的，不是"甩"过去的。
+ * 窗口过完自动恢复原来的控制参数，正常循迹一点不受影响。 */
+#define TRACK_HANDOFF_MS          600
+#define TRACK_HANDOFF_MIN_SPEED    12
+#define TRACK_HANDOFF_TURN_RATIO  1.0f   /* 1.0 = 内侧轮最多刚好停转（0 PWM），绝不反转。
+                                          * 想要更肉就往下调（0.8 时内侧轮还留 20% 前进量），
+                                          * 但别超过 1.2 —— 再大就又变成原地拧了。 */
 
 
 /* ==================== 终点停车（8 路全黑）====================
@@ -295,7 +301,7 @@ static void ActHist_AddEvent(uint8_t e)
  *   CD4051 的地址线，和 TIM1 中断抢 GPIO，会把循迹读数搞乱。
  *
  * 显示内容：
- *   第0行：L/R = 左右超声波距离(cm，-1 = 无回波)  A = 避障动作  S = 停车标志
+ *   第0行：L/C/R = 左中右超声波距离(cm，-1 = 无回波)  A = 避障动作  S = 停车标志
  *   第1行：P = 循迹偏差(-1000~1000)  T = 压线路数(8 = 全黑)
  *          O = 连续在线上几拍（越大说明"正常沿线跑"越久）  B = 连续全黑几拍
  *   第2行：SL/SR = 左右轮实测速度（脉冲/10ms，看两个轮子一致不一致）
@@ -304,92 +310,141 @@ static void ActHist_AddEvent(uint8_t e)
  *          例：3456034560 = 转出->直行->回正->抓住->交回，跑了两轮
  *          另外 8 = 丢线、9 = 重新抓到线（也记在同一行）
  *
- * 动作 A：0=循迹 1=减速 2=刹停 3=转出45° 4=直行绕过 5=回正(反向转)
- *         6=抓住(回正途中扫到线刹停) 7=斜着爬回线 8=兜底画弧扫线
+ * 动作 A：0=循迹 2=刹停 3=转出(第一段) 4=画弧绕障+找线(第二段) 5=回正(第三段)
+ *         6=压到线刹停验证 7=缓弧爬线 8=兜底画弧扫线
  * 停车 S：0=正常  1=已触发终点停车（只能重新上电复位） */
+/* 屏幕每行刷新的间隔（毫秒）。
+ *
+ * ⚠ 这套 OLED 驱动是软件 I2C，而且【每写一个字符的每一列都要重发一次
+ *   坐标命令】—— 一个字符 = 6 次 (3 条 I2C 命令 + 1 次数据) ≈ 1ms（-O0 下）。
+ *   原来一次刷新 8 行、约 120 个字符，也就是主循环一次被卡住 100ms 量级，
+ *   每 200ms 来一次 —— 避障状态机、循迹交回的那一下全被这段卡死吞掉，
+ *   表现就是"功能之间总还隔一段时间"。
+ *
+ * 现在改成【每次主循环只刷一行】：整屏还是约 8×25 = 200ms 走一遍，
+ * 但单次最多卡 20ms 左右，状态机的最坏反应延迟从 100ms+ 降到 20ms。 */
+#define DEBUG_LINE_MS 25
+
 static void Debug_Show(void)
 {
     static uint32_t dbg_tick = 0;
+    static uint8_t  dbg_line = 0;
 
-    if (HAL_GetTick() - dbg_tick < 200)
+    if (HAL_GetTick() - dbg_tick < DEBUG_LINE_MS)
         return;
 
     dbg_tick = HAL_GetTick();
 
-    /* ---- 第 0 行：左右超声波 + 避障动作 + 停车标志 ---- */
-    OLED_ShowString(0, 0, (uint8_t *)"L", 8);
-    OLED_ShowSignedNum(6, 0, Avoid_GetLeftCm(), 3, 8);
+    switch (dbg_line)
+    {
+    /* ---- 第 0 行：左中右超声波 + 避障动作 + 停车标志 ---- */
+    case 0:
+        OLED_ShowString(0, 0, (uint8_t *)"L", 8);
+        OLED_ShowSignedNum(6, 0, Avoid_GetLeftCm(), 3, 8);
 
-    OLED_ShowString(30, 0, (uint8_t *)"R", 8);
-    OLED_ShowSignedNum(36, 0, Avoid_GetRightCm(), 3, 8);
+        OLED_ShowString(30, 0, (uint8_t *)"C", 8);
+        OLED_ShowSignedNum(36, 0, Avoid_GetCenterCm(), 3, 8);
 
-    OLED_ShowString(60, 0, (uint8_t *)"A", 8);
-    OLED_ShowNum(66, 0, (uint32_t)Avoid_GetAction(), 1, 8);
+        OLED_ShowString(60, 0, (uint8_t *)"R", 8);
+        OLED_ShowSignedNum(66, 0, Avoid_GetRightCm(), 3, 8);
 
-    OLED_ShowString(78, 0, (uint8_t *)"S", 8);
-    OLED_ShowNum(84, 0, (uint32_t)g_stop, 1, 8);
+        OLED_ShowString(90, 0, (uint8_t *)"A", 8);
+        OLED_ShowNum(96, 0, (uint32_t)Avoid_GetAction(), 1, 8);
+
+        OLED_ShowString(108, 0, (uint8_t *)"S", 8);
+        OLED_ShowNum(114, 0, (uint32_t)g_stop, 1, 8);
+        break;
 
     /* ---- 第 1 行：循迹偏差 + 压线路数（读副本，安全） ---- */
-    OLED_ShowString(0, 1, (uint8_t *)"P", 8);
-    OLED_ShowSignedNum(6, 1, g_pos_copy, 4, 8);
+    case 1:
+        OLED_ShowString(0, 1, (uint8_t *)"P", 8);
+        OLED_ShowSignedNum(6, 1, g_pos_copy, 4, 8);
 
-    OLED_ShowString(36, 1, (uint8_t *)"T", 8);
-    OLED_ShowNum(42, 1, (uint32_t)g_track_active, 1, 8);
+        OLED_ShowString(36, 1, (uint8_t *)"T", 8);
+        OLED_ShowNum(42, 1, (uint32_t)g_track_active, 1, 8);
 
-    OLED_ShowString(54, 1, (uint8_t *)"O", 8);
-    OLED_ShowNum(60, 1, (uint32_t)g_online_cnt, 3, 8);
+        OLED_ShowString(54, 1, (uint8_t *)"O", 8);
+        OLED_ShowNum(60, 1, (uint32_t)g_online_cnt, 3, 8);
 
-    OLED_ShowString(84, 1, (uint8_t *)"B", 8);
-    OLED_ShowNum(90, 1, (uint32_t)g_black_cnt, 2, 8);
+        OLED_ShowString(84, 1, (uint8_t *)"B", 8);
+        OLED_ShowNum(90, 1, (uint32_t)g_black_cnt, 2, 8);
+        break;
 
     /* ---- 第 2 行：左右轮实测速度（脉冲/10ms） ---- */
-    OLED_ShowString(0, 2, (uint8_t *)"SL", 8);
-    OLED_ShowSignedNum(12, 2, g_speed_l, 4, 8);
+    case 2:
+        OLED_ShowString(0, 2, (uint8_t *)"SL", 8);
+        OLED_ShowSignedNum(12, 2, g_speed_l, 4, 8);
 
-    OLED_ShowString(42, 2, (uint8_t *)"SR", 8);
-    OLED_ShowSignedNum(54, 2, g_speed_r, 4, 8);
+        OLED_ShowString(42, 2, (uint8_t *)"SR", 8);
+        OLED_ShowSignedNum(54, 2, g_speed_r, 4, 8);
 
-    /* ---- 第 3 行：左右轮 PWM 输出 ---- */
-    OLED_ShowString(0, 3, (uint8_t *)"PL", 8);
-    OLED_ShowSignedNum(12, 3, g_pwm_l, 4, 8);
+        /* H = 里程计累计航向（度，左转为正；标定轮距用） */
+        OLED_ShowString(84, 2, (uint8_t *)"H", 8);
+        OLED_ShowSignedNum(90, 2, (int16_t)Odom_GetHeadingDeg(), 4, 8);
+        break;
 
-    OLED_ShowString(42, 3, (uint8_t *)"PR", 8);
-    OLED_ShowSignedNum(54, 3, g_pwm_r, 4, 8);
+    /* ---- 第 3 行：左右轮 PWM 输出 + 已触发避障次数 ---- */
+    case 3:
+        OLED_ShowString(0, 3, (uint8_t *)"PL", 8);
+        OLED_ShowSignedNum(12, 3, g_pwm_l, 4, 8);
 
-    /* ---- 第 3 行右侧：已经触发过多少次避障动作 ----
-     * 数字一直往上涨 -> 车在反复触发（贴着障碍物来回蹭）；
-     * 数字不动但车停住 -> 停的原因不在避障上。 */
-    OLED_ShowString(84, 3, (uint8_t *)"N", 8);
-    OLED_ShowNum(90, 3, Avoid_GetManeuverCount(), 3, 8);
+        OLED_ShowString(42, 3, (uint8_t *)"PR", 8);
+        OLED_ShowSignedNum(54, 3, g_pwm_r, 4, 8);
+
+        /* 数字一直往上涨 -> 车在反复触发（贴着障碍物来回蹭）；
+         * 数字不动但车停住 -> 停的原因不在避障上。 */
+        OLED_ShowString(84, 3, (uint8_t *)"N", 8);
+        OLED_ShowNum(90, 3, Avoid_GetManeuverCount(), 3, 8);
+        break;
 
     /* ---- 第 4 行：A 的变化历史（跑完拍这张照片就能回看整个避障过程） ---- */
-    OLED_ShowString(0, 4, (uint8_t *)"A", 8);
-    OLED_ShowString(6, 4, (uint8_t *)g_act_hist, 8);
+    case 4:
+        OLED_ShowString(0, 4, (uint8_t *)"A", 8);
+        OLED_ShowString(6, 4, (uint8_t *)g_act_hist, 8);
+        break;
 
     /* ---- 第 5 行：当前阶段已经走了多少脉冲（看阶段判据有没有在推进）----
      * 转出/回正数的是转角（每度 18 脉冲），直行/爬线数的是距离（每厘米 69 脉冲）。
      *   G 一直不涨 -> 这一阶段的判据失效，只能靠超时退出 -> 会走过头。 */
-    OLED_ShowString(0, 5, (uint8_t *)"G", 8);
-    OLED_ShowNum(6, 5, (uint32_t)Avoid_GetStagePulses(), 4, 8);
+    case 5:
+        OLED_ShowString(0, 5, (uint8_t *)"G", 8);
+        OLED_ShowNum(6, 5, (uint32_t)Avoid_GetStagePulses(), 4, 8);
+
+        /* E = 地图航向误差（度，> 0 车头偏左）  K = 里程计累计里程（cm，标定用） */
+        OLED_ShowString(36, 5, (uint8_t *)"E", 8);
+        OLED_ShowSignedNum(42, 5, (int16_t)Odom_GetHeadingErrDeg(), 3, 8);
+        OLED_ShowString(72, 5, (uint8_t *)"K", 8);
+        OLED_ShowNum(78, 5, (uint32_t)((Odom_GetDistCm() > 0.0f) ? Odom_GetDistCm() : 0.0f), 4, 8);
+        break;
 
     /* ---- 第 6 行：避障【实际】发给电机的指令（PL/PR 是循迹的旧值，看不出避障）
      * 0/0 且 A=2 或 6 -> 正在刹停；某一阶段这里一直是 0/0 就是没驱动电机。 ---- */
-    OLED_ShowString(0, 6, (uint8_t *)"ML", 8);
-    OLED_ShowSignedNum(12, 6, g_avoid_out_l, 4, 8);
-    OLED_ShowString(48, 6, (uint8_t *)"MR", 8);
-    OLED_ShowSignedNum(60, 6, g_avoid_out_r, 4, 8);
+    case 6:
+        OLED_ShowString(0, 6, (uint8_t *)"ML", 8);
+        OLED_ShowSignedNum(12, 6, g_avoid_out_l, 4, 8);
+        OLED_ShowString(48, 6, (uint8_t *)"MR", 8);
+        OLED_ShowSignedNum(60, 6, g_avoid_out_r, 4, 8);
 
-    /* ---- 第 7 行：三个关键阶段【实际走到】的最大脉冲数（峰值，跑完拍照就行）
-     * D = 转出（目标 540 = 30°）、S = 直行（目标 1380 = 20cm）、
-     * B = 回正（目标 1080 = 60°）
-     * 某个值没到目标 -> 那个阶段没走完（被提前退出 or 没驱动电机）。
-     * ⚠ B 是四位数（1080），显示位数必须给 4，否则千位会被截掉。 ---- */
-    OLED_ShowString(0, 7, (uint8_t *)"D", 8);
-    OLED_ShowNum(6, 7, (uint32_t)g_max_dodge, 4, 8);
-    OLED_ShowString(36, 7, (uint8_t *)"S", 8);
-    OLED_ShowNum(42, 7, (uint32_t)g_max_pass, 4, 8);
-    OLED_ShowString(72, 7, (uint8_t *)"B", 8);
-    OLED_ShowNum(78, 7, (uint32_t)g_max_backturn, 4, 8);
+        /* M = 地图模式：0 没地图  1 示教中  2 比赛（有地图） */
+        OLED_ShowString(96, 6, (uint8_t *)"M", 8);
+        OLED_ShowNum(102, 6, (uint32_t)Odom_GetMode(), 1, 8);
+        break;
+
+    /* ---- 第 7 行：三段【实际走到】的最大脉冲数（本次避障的峰值）
+     * D = 转出（目标 720 = 40°）、C = 画弧（满程 2070 = 30cm，提前找到线会更小）、
+     * B = 回正（目标 720 = 40°；为 0 说明第二段已找到线、没做第三段） ---- */
+    default:
+        OLED_ShowString(0, 7, (uint8_t *)"D", 8);
+        OLED_ShowNum(6, 7, (uint32_t)g_max_dodge, 4, 8);
+        OLED_ShowString(36, 7, (uint8_t *)"C", 8);
+        OLED_ShowNum(42, 7, (uint32_t)g_max_circle, 4, 8);
+        OLED_ShowString(72, 7, (uint8_t *)"B", 8);
+        OLED_ShowNum(78, 7, (uint32_t)g_max_backturn, 4, 8);
+        break;
+    }
+
+    if (++dbg_line >= 8)
+        dbg_line = 0;
 }
 
 /* USER CODE END 0 */
@@ -430,6 +485,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   Motor_Init();
   Encoder_Init();
+  Odom_Init();
   OLED_Init();
   Avoid_Init();
   Track_Init();
@@ -467,6 +523,25 @@ int main(void)
     g_track_enable = 1;
     g_target_speed = MOTOR_TEST_SPEED;
 #else
+    if (Odom_GetMode() == ODOM_MODE_TEACH)
+    {
+        /* ----- 示教：只循迹不避障，跑满全长就停车存图（之后重新上电即进入比赛模式） ----- */
+        if (Odom_TeachDone())
+        {
+            __disable_irq();
+            g_track_enable = 0;
+            g_stop = 1;
+            __enable_irq();
+            Motor_BrakeAll();
+            HAL_Delay(200);
+            (void)Odom_Save();
+            continue;
+        }
+
+        g_target_speed = TRACK_SPEED_NORMAL;
+        g_track_enable = 1;
+    }
+    else
     /* ----- 超声波避障决策（循迹 PID 控制在 TIM1 中断里跑） ----- */
     {
     const AvoidAction act = Avoid_Update();
@@ -512,11 +587,6 @@ int main(void)
         g_track_enable = 1;
         break;
 
-    case AVOID_SLOW: /* 循迹但减速（AVOID_USE_SLOW = 0 时不会出现） */
-        g_target_speed = TRACK_SPEED_SLOW;
-        g_track_enable = 1;
-        break;
-
     /* ---- 避障接管：中断停手，主循环按状态机给电机 ----
      * 关中断是为了让"g_track_enable=0 + 左右轮两条指令"整组原子生效，
      * 否则中断可能插在中间，出现"左轮避障值 + 右轮循迹值"的混合状态。 */
@@ -533,7 +603,8 @@ int main(void)
 #if TRACK_ALIGN_ENABLE && !MOTOR_TEST_MODE
     /* ==================== 大角度进入循迹检测与对正（独立检测，每次主循环都执行）==================== */
     /* 只在循迹模式下检测，避障期间不检测 */
-    if (g_track_enable && !g_align_active && Track_DetectFastSweep())
+    /* 避障流程中（包括第二段临时循迹）不做对正，否则会阻塞打断画弧 */
+    if (g_track_enable && !g_align_active && !Avoid_IsActive() && Track_DetectFastSweep())
     {
         /* 检测到快速扫线：停车，根据避障方向对正 */
         const uint8_t avoid_side = Avoid_GetLastSide();
@@ -547,37 +618,56 @@ int main(void)
         Motor_BrakeAll();
         HAL_Delay(100);
 
-        /* 根据避障方向决定转向方向
-         * 关键逻辑：避障从哪一侧绕过，回线时就需要朝反方向转回来
-         * - 避障从左侧绕过（障碍在左，side=1）：车头朝右偏，需要【右转】对正
-         * - 避障从右侧绕过（障碍在右，side=2）：车头朝左偏，需要【左转】对正 */
-        if (avoid_side == 1 || avoid_side == 2)
+        /* 决定往哪转、转多少（turn_dir：1 = 右转，2 = 左转，0 = 不转）
+         * - 有地图：按航向误差转回赛道方向（e > 0 = 车头偏左 -> 右转 |e| 度）
+         * - 没地图：按避障方向转固定角度
+         *     障碍在左（side=1）→ 右转；障碍在右（side=2）→ 左转 */
+        uint8_t turn_dir  = 0;
+        int32_t align_deg = TRACK_ALIGN_TURN_DEG;
+
+        if (Odom_MapReady())
         {
-            /* 计算需要转的脉冲数（每度18脉冲），加大到20度 */
-            const int32_t align_pulses = 20 * 18;
-            const int32_t ref_l = encoder_left.total_count;
-            const int32_t ref_r = encoder_right.total_count;
+            const float e  = Odom_GetHeadingErrDeg();
+            const float ae = fabsf(e);
+
+            if (ae >= (float)TRACK_ALIGN_MIN_DEG)
+            {
+                turn_dir  = (e > 0.0f) ? 1U : 2U;
+                align_deg = (ae > (float)TRACK_ALIGN_MAX_DEG) ? TRACK_ALIGN_MAX_DEG : (int32_t)ae;
+            }
+        }
+        else if (avoid_side == 1 || avoid_side == 2)
+        {
+            turn_dir = avoid_side;
+        }
+
+        if (turn_dir != 0)
+        {
+            const int32_t  align_pulses = align_deg * AVOID_PULSES_PER_DEG;
+            const int32_t  ref_l = encoder_left.total_count;
+            const int32_t  ref_r = encoder_right.total_count;
+            const uint32_t t0    = HAL_GetTick();
 
             /* 坦克转弯对正 */
-            if (avoid_side == 1)
+            if (turn_dir == 1)
             {
-                /* 障碍在左，从左侧绕过 → 车头朝右 → 需要右转 */
+                /* 右转 */
                 Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, 18);   // 左轮正转
-                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -18);  // 右轮反转
+                Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, -18);  // 右轮反转（右转）
             }
             else
             {
-                /* 障碍在右，从右侧绕过 → 车头朝左 → 需要左转 */
-                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, -18);  // 左轮反转
+                /* 左转 */
+                Motor_SetSpeed(MOTOR_LEFT,  MOTOR_START, -18);  // 左轮反转（左转）
                 Motor_SetSpeed(MOTOR_RIGHT, MOTOR_START, 18);   // 右轮正转
             }
 
-            /* 等待转够角度 */
-            while (1)
+            /* 等待转够角度（左轮计数方向是反的，转角 = |dl + dr|，与 avoid.c 的 EncRot 一致） */
+            while ((HAL_GetTick() - t0) < TRACK_ALIGN_MAX_MS)
             {
-                const int32_t dl = encoder_left.total_count - ref_l;
-                const int32_t dr = encoder_right.total_count - ref_r;
-                const int32_t rot = (dl > dr) ? (dl - dr) : (dr - dl);
+                const int32_t dl  = encoder_left.total_count - ref_l;
+                const int32_t dr  = encoder_right.total_count - ref_r;
+                const int32_t rot = (dl + dr >= 0) ? (dl + dr) : -(dl + dr);
 
                 if (rot >= align_pulses)
                     break;
@@ -677,16 +767,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     static uint32_t leave_tick = 0;          /* 离开起点线的时刻（HAL_GetTick） */
 #endif
 
-    /* 软启动状态（见 TRACK_SOFT_START_MS 的说明） */
     static uint8_t  lost_cnt     = 0;  /* 连续丢线的拍数 */
-    static uint8_t  soft_armed   = 0;  /* 丢线够久了 -> 下次抓到线要软启动 */
-    static uint32_t soft_until   = 0;  /* 软启动的截止时刻 */
+    static uint8_t  assist_armed = 0;  /* 丢线够久了 -> 下次抓到线开对正辅助 */
     static uint32_t assist_until = 0;  /* 对正辅助的截止时刻（见 TRACK_ASSIST_MS） */
     static uint8_t  assist_restart = 0;/* 辅助窗口刚开启：低通滤波器要用真实偏差重置
                                         * （丢线期间偏差是假的 ±TRACK_LOST_STEER，
                                         *   不清掉会在刚压上线时产生反向冲量） */
     static uint8_t  prev_enable  = 0;  /* 上一拍是否在循迹（用来发现"刚交回来"） */
     static uint8_t  started      = 0;  /* 是否已经循迹过一次（上电第一次不算"交回来"） */
+    static uint32_t handoff_until = 0; /* 交回循迹的爬坡窗口截止时刻（见 TRACK_HANDOFF_MS） */
 
     int16_t vL, vR;
 
@@ -730,48 +819,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         g_online_cnt = 0;
     }
 
-    /* ---- 2.6 软启动计时 ----
-     * 刚交回循迹、或者丢线很久之后重新抓到线时，先把转向限幅压小一段时间。
-     *
-     * 为什么必须压：位置环是纯 P，偏差一大 turn 立刻顶到限幅（±30），
-     * 内侧轮目标直接变成 0 甚至反向 —— 车会"猛地一抖"把线甩掉，
-     * 甩掉之后又丢线、又转圈找，就是实测看到的
-     * "碰到线抖一下就继续转圈"。把刚抓到线那一下的转向压小，
-     * 车就会顺着线慢慢拧过来，而不是一把打过去。 */
+    /* ---- 2.6 对正辅助窗口：丢线够久后重新压线 / 避障刚交回来时开启 ---- */
     if (g_track_active == 0)
     {
         if (lost_cnt < 250U)
             lost_cnt++;
-        if (lost_cnt >= (TRACK_SOFT_LOST_MIN_MS / 10U))
-            soft_armed = 1;          /* 丢线够久了，抓到线要软启动 */
+        if (lost_cnt >= (TRACK_ASSIST_LOST_MIN_MS / 10U))
+            assist_armed = 1;
     }
     else
     {
-        if (soft_armed)
+        if (assist_armed)
         {
-            soft_until   = HAL_GetTick() + TRACK_SOFT_START_MS;
-            assist_until = HAL_GetTick() + TRACK_ASSIST_MS;
+            assist_until   = HAL_GetTick() + TRACK_ASSIST_MS;
             assist_restart = 1;
-            soft_armed   = 0;
+            assist_armed   = 0;
         }
         lost_cnt = 0;
     }
 
     if (!prev_enable && g_track_enable)
     {
-        /* 避障刚把控制权交回来：这之前肯定离线很久了，直接软启动。
-         * 但【上电第一次】不软启动 —— 上电时常常是把车斜着放在线上，
-         * 那一下正需要果断对正，这时压小转向反而会跟不上去。 */
+        /* 交回循迹：开爬坡窗口（上电第一次也开 —— 只是慢 0.6 秒，无副作用） */
+        handoff_until = HAL_GetTick() + TRACK_HANDOFF_MS;
+
+        /* 上电第一次不算"交回来" */
         if (started)
         {
-            soft_until = HAL_GetTick() + TRACK_SOFT_START_MS;
-            assist_until = HAL_GetTick() + TRACK_ASSIST_MS;
+            assist_until   = HAL_GetTick() + TRACK_ASSIST_MS;
             assist_restart = 1;
         }
 
-        started    = 1;
-        lost_cnt   = 0;
-        soft_armed = 0;
+        started      = 1;
+        lost_cnt     = 0;
+        assist_armed = 0;
     }
     prev_enable = g_track_enable;
 
@@ -784,6 +865,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         const int16_t pos_now = Track_GetPosition();
 
         g_pos_copy = pos_now;
+    }
+
+    /* ---- 2.8 里程计（避障期间也照算，位姿才连续）----
+     * "稳稳压在线中间"才拿地图纠漂：在循迹、压着线、连续在线够久、偏差小 */
+    {
+        const int16_t apos   = (g_pos_copy < 0) ? (int16_t)(-g_pos_copy) : g_pos_copy;
+        const uint8_t stable = g_track_enable && (g_track_active > 0U) &&
+                               (g_online_cnt >= ODOM_FUSE_ONLINE) &&
+                               (apos <= ODOM_FUSE_POS_MAX);
+
+        Odom_Update(vL, vR, stable);
     }
 
     if (!g_track_enable)
@@ -887,6 +979,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         {
             /* 不动 turn */
         }
+        else if (Odom_MapReady())
+        {
+            /* 丢线久了 + 有地图：把车头拧回赛道方向，再朝最后看到线的那一侧偏一点，
+             * 横向靠回线上。不会再像定时换向那样有一半概率往反方向跑。
+             * e > 0 = 车头偏左 -> 要右转 -> turn 为正；pos > 0 = 线在右 -> 偏置也往右 */
+            const float bias = (pos > 0) ? ODOM_SEARCH_BIAS_DEG : -ODOM_SEARCH_BIAS_DEG;
+            float t = ODOM_HOLD_KP * (Odom_GetHeadingErrDeg() + bias);
+
+            if (t >  (float)ODOM_HOLD_TURN_MAX) t =  (float)ODOM_HOLD_TURN_MAX;
+            if (t < -(float)ODOM_HOLD_TURN_MAX) t = -(float)ODOM_HOLD_TURN_MAX;
+            turn = t;
+        }
         else
         {
             /* 丢线久了：宽弧 + 定时换向搜索（方向靠不住，就两边都扫） */
@@ -898,16 +1002,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
             turn = search_dir ? (float)TRACK_SEARCH_TURN : -(float)TRACK_SEARCH_TURN;
         }
-    }
-
-    /* 软启动期间把转向压小：刚抓到线的那一下先顺着线慢慢拧过来，
-     * 不要一把猛打（猛打会把线甩掉，然后又回去转圈） */
-    if ((int32_t)(soft_until - HAL_GetTick()) > 0)
-    {
-        if (turn >  (float)TRACK_SOFT_TURN_MAX)
-            turn =  (float)TRACK_SOFT_TURN_MAX;
-        if (turn < -(float)TRACK_SOFT_TURN_MAX)
-            turn = -(float)TRACK_SOFT_TURN_MAX;
     }
 
     /* 6.4 对正辅助（只在刚交回循迹/刚重新抓到线的一段时间内生效）：
@@ -965,6 +1059,25 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
      *       （丢线时 Track_GetPosition() 返回的是固定值 ±TRACK_LOST_STEER，
      *         拿它当偏差去降速会把找线的螺旋压得很小，反而更难找到线。） */
     int16_t spd = g_target_speed;
+
+    /* 交回循迹的爬坡：先慢后快，给位置环留出把车头拧正的时间。
+     * （原来交回那一拍就是 25 全速，位置环又按满偏差给 turn，
+     *   内侧轮直接反转 -> 原地拧 -> 传感器排横扫 -> 线没了） */
+    if (((int32_t)(handoff_until - HAL_GetTick()) > 0) &&
+        (g_target_speed > TRACK_HANDOFF_MIN_SPEED))
+    {
+        const int32_t left_ms = (int32_t)(handoff_until - HAL_GetTick());
+        const int32_t span    = (int32_t)g_target_speed - TRACK_HANDOFF_MIN_SPEED;
+        int32_t       s       = TRACK_HANDOFF_MIN_SPEED +
+                                (span * (TRACK_HANDOFF_MS - left_ms)) / TRACK_HANDOFF_MS;
+
+        if (s > (int32_t)g_target_speed)
+            s = (int32_t)g_target_speed;
+        if (s < TRACK_HANDOFF_MIN_SPEED)
+            s = TRACK_HANDOFF_MIN_SPEED;
+
+        spd = (int16_t)s;
+    }
     if (Track_IsLost())
     {
         /* 丢线：限速，别让车高速冲出赛道（丢线时 Track_GetPosition() 返回的是
@@ -994,6 +1107,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         }
     }
 #endif
+
+    /* 6.6 爬坡窗口内限制转向：|turn| <= spd×0.8，内侧轮目标速度永远 >= 0.2×spd，
+     *     不会反转。这一条 + 上面的降速，合起来就是"交回循迹不甩线"。 */
+    if ((int32_t)(handoff_until - HAL_GetTick()) > 0)
+    {
+        const float cap = (float)spd * TRACK_HANDOFF_TURN_RATIO;
+
+        if (turn >  cap)
+            turn =  cap;
+        if (turn < -cap)
+            turn = -cap;
+    }
 
     /* 7. 目标速度 = 直行速度 ± 转向（线偏右则左快右慢，向右纠偏） */
     float vL_target = (float)spd + turn;
