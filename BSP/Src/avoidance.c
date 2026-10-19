@@ -17,7 +17,10 @@ static int16_t last_nonzero_position = 0;
 /* 只有 TIM1 中断修改。 */
 static uint16_t turn_out_ticks = 0U;
 static float turn_out_differential = 0.0f;
-static uint16_t extra_turn_ticks = 0U;
+static float extra_turn_travel = 0.0f;
+static uint16_t extra_turn_check_ticks = 0U;
+static uint8_t extra_turn_skip_travel = 0U;
+static float extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
 
 static uint8_t SensorReadingFresh(const Ultrasonic_Reading *reading)
 {
@@ -62,7 +65,10 @@ void Avoidance_Reset(void)
     last_nonzero_position = 0;
     turn_out_ticks = 0U;
     turn_out_differential = 0.0f;
-    extra_turn_ticks = 0U;
+    extra_turn_travel = 0.0f;
+    extra_turn_check_ticks = 0U;
+    extra_turn_skip_travel = 0U;
+    extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
 }
 
 void Avoidance_Init(void)
@@ -212,12 +218,29 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
+        uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
+
         /* 按约定不使用丢线保护、最小转入时间等额外条件。 */
-        if (Track_CountConsecutiveBlackFromBitmap(bitmap) >= 2U)
+        if (consecutive_black >= 2U)
         {
             /* 保留原避障方向，立即切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
-            extra_turn_ticks = 0U;
+            extra_turn_travel = 0.0f;
+            extra_turn_check_ticks = 0U;
+            extra_turn_skip_travel = 1U;
+
+            if (consecutive_black >= 4U)
+            {
+                extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_4_PLUS;
+            }
+            else if (consecutive_black == 3U)
+            {
+                extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_3;
+            }
+            else
+            {
+                extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
+            }
         }
         else
         {
@@ -231,26 +254,47 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_EXTRA_TURN)
     {
-        /* 中间四路中任意一路检测到黑线，当周期立即交回循迹。 */
-        if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) ||
-            (extra_turn_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
+        float average_delta;
+
+        /*
+         * 进入第三段的首个速度反馈来自第二段，不能计入第三段行驶距离。
+         */
+        if (extra_turn_skip_travel != 0U)
         {
-            avoidance_state = AVOIDANCE_STATE_IDLE;
-            active_direction = AVOIDANCE_DIRECTION_NONE;
-            pending_direction = AVOIDANCE_DIRECTION_NONE;
-            waiting_for_line_direction = 0U;
-            return control;
+            extra_turn_skip_travel = 0U;
+        }
+        else
+        {
+            average_delta = (left_speed + right_speed) * 0.5f;
+            if (average_delta > 0.0f)
+            {
+                extra_turn_travel += average_delta;
+            }
+        }
+
+        if (extra_turn_travel >= AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS)
+        {
+            if (extra_turn_check_ticks < 0xFFFFU)
+            {
+                extra_turn_check_ticks++;
+            }
+
+            /* 达到最小距离后，才允许由黑线与超时结束第三段。 */
+            if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) ||
+                (extra_turn_check_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
+            {
+                avoidance_state = AVOIDANCE_STATE_IDLE;
+                active_direction = AVOIDANCE_DIRECTION_NONE;
+                pending_direction = AVOIDANCE_DIRECTION_NONE;
+                waiting_for_line_direction = 0U;
+                return control;
+            }
         }
 
         steer_sign = DirectionSign(active_direction);
         control.use_line_pid = 0U;
         control.base_speed = AVOIDANCE_BASE_SPEED;
-        control.steer = steer_sign * AVOIDANCE_EXTRA_SPEED_DIFF;
-
-        if (extra_turn_ticks < 0xFFFFU)
-        {
-            extra_turn_ticks++;
-        }
+        control.steer = steer_sign * extra_turn_speed_diff;
         return control;
     }
 

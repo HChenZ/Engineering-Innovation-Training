@@ -6,11 +6,11 @@
 
 /* 距离单位 mm，速度单位与编码器速度环一致（脉冲/10 ms）。 */
 #ifndef AVOIDANCE_SIDE_TRIGGER_MM
-#define AVOIDANCE_SIDE_TRIGGER_MM 265U
+#define AVOIDANCE_SIDE_TRIGGER_MM 280U
 #endif
 
 #ifndef AVOIDANCE_CENTER_TRIGGER_MM
-#define AVOIDANCE_CENTER_TRIGGER_MM 265U
+#define AVOIDANCE_CENTER_TRIGGER_MM 280U
 #endif
 
 #ifndef AVOIDANCE_RELEASE_EXTRA_MM
@@ -26,7 +26,7 @@
 #endif
 
 #ifndef AVOIDANCE_SPEED_DIFF
-#define AVOIDANCE_SPEED_DIFF 9.0f
+#define AVOIDANCE_SPEED_DIFF 8.5f
 #endif
 
 #ifndef AVOIDANCE_WAIT_SPEED
@@ -43,9 +43,25 @@
 #define AVOIDANCE_OUT_TIMEOUT_TICKS 75U
 #endif
 
-/* 第三段小弧线：使用更小的速度差 */
-#ifndef AVOIDANCE_EXTRA_SPEED_DIFF
-#define AVOIDANCE_EXTRA_SPEED_DIFF 5.0f
+/* 第三段速度差根据第二段捕获黑线时最长连续黑点数选择。 */
+#ifndef AVOIDANCE_EXTRA_SPEED_DIFF_2
+#define AVOIDANCE_EXTRA_SPEED_DIFF_2 3.0f
+#endif
+
+#ifndef AVOIDANCE_EXTRA_SPEED_DIFF_3
+#define AVOIDANCE_EXTRA_SPEED_DIFF_3 5.0f
+#endif
+
+#ifndef AVOIDANCE_EXTRA_SPEED_DIFF_4_PLUS
+#define AVOIDANCE_EXTRA_SPEED_DIFF_4_PLUS 8.0f
+#endif
+
+/*
+ * 第三段最小行驶距离，单位为左右轮平均编码器增量。
+ * 达到该值之前，即使检测到黑线也不交回循迹。
+ */
+#ifndef AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS
+#define AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS 100.0f
 #endif
 
 /* 灰度第 3~4 路（中间两路）任意一路检测到黑线时结束第三段 */
@@ -53,9 +69,9 @@
 #define AVOIDANCE_MIDDLE_FOUR_MASK 0x18U
 #endif
 
-/* 安全兜底：正常应由中间四路结束，超过该时间则强制交回循迹 */
+/* 达到最小距离后开始计时；中间两路未捕获黑线时超时交回循迹。 */
 #ifndef AVOIDANCE_EXTRA_TIMEOUT_TICKS
-#define AVOIDANCE_EXTRA_TIMEOUT_TICKS 30U
+#define AVOIDANCE_EXTRA_TIMEOUT_TICKS 35U
 #endif
 
 typedef enum
