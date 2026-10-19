@@ -10,11 +10,15 @@
 //   蓝牙模块 GND -> GND
 // 串口参数：9600 8-N-1（模块出厂默认，别忘了一起改手机 APP 的波特率）
 //
-// 命令（大小写都行，结尾带不带 \r\n 都行）：
-//   "start" / "s" / "1"  -> 启动：小车开始循迹 + 避障
-//   "stop"  / "p" / "0"  -> 停车：立即刹车
+// 三阶段ASCII协议（数字单字节立即解析，不需要换行）：
+//   '1' / 0x31 -> 学习（teach/t），只循迹；有参考圈长可自动终点停，否则发2结束
+//   '2' / 0x32 -> 停车并保存（save），回OK MAP之后才能断电或比赛
+//   '3' / 0x33 -> 比赛（start/s），必须已有地图；不自动学习
+//   '0' / 0x30 -> 接收回调锁存急停，下一TIM1优先刹车并取消未保存学习，不覆盖旧图
+//   注意：发送字符'1'，不是二进制字节0x01！
+//   "map"   / "m"        -> 查询地图点数、间隔、模式和救援状态；无图回 "MAP NONE"
 // 每收到一条命令，单片机回一行应答，方便手机端确认链路：
-//   收到 start -> "OK START\r\n"
+//   收到 start -> "OK START MAP\r\n"（无图回ERR NO MAP）
 //   收到 stop  -> "OK STOP\r\n"
 //   不认识的命令 -> "ERR\r\n"
 //
@@ -31,8 +35,11 @@
 typedef enum
 {
     BT_CMD_NONE = 0, /* 没有新命令 */
-    BT_CMD_START,    /* 启动 */
+    BT_CMD_START,    /* 阶段3：比赛 */
     BT_CMD_STOP,     /* 停车 */
+    BT_CMD_TEACH,    /* 阶段1：学习地图到RAM，见 odom.h */
+    BT_CMD_SAVE,     /* 阶段2：先停车，再保存到Flash */
+    BT_CMD_MAP,      /* 查询地图状态 */
     BT_CMD_UNKNOWN   /* 收到不认识的命令（可以回 ERR 提示） */
 } BluetoothCmd;
 
@@ -41,6 +48,12 @@ void Bluetooth_Init(void);
 
 /* 取一条命令（主循环里反复调用，直到返回 BT_CMD_NONE） */
 BluetoothCmd Bluetooth_GetCommand(void);
+
+/* ASCII '0'在接收回调直接锁存，TIM1据此优先刹车，不等OLED/文本命令处理。
+ * Clear只由主循环在已设置停车请求后调用，并丢弃旧队列，防止迟到的start重启。 */
+uint8_t Bluetooth_EmergencyStopLatched(void);
+void Bluetooth_ClearEmergencyStop(void);
+uint32_t Bluetooth_GetSaveSequence(void); /* ASCII '2'接收次数，TIM1可快速停车待存 */
 
 /* 通过蓝牙回发字符串（调试/应答用） */
 void Bluetooth_SendString(const char *str);

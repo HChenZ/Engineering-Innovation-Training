@@ -56,6 +56,10 @@
 #define AVOIDANCE_EXTRA_TIMEOUT_TICKS 30U
 #endif
 
+/* 回线候选由主控制器的地图/形态检查给出，连续命中后才开始第三段。 */
+#define AVOIDANCE_LINE_HINT_TICKS 3U
+#define AVOIDANCE_IN_TIMEOUT_TICKS 250U /* 找不到可信线最多2.5s，交给回线验证/地图兜底 */
+
 typedef enum
 {
     AVOIDANCE_STATE_IDLE = 0,
@@ -91,10 +95,15 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
 /*
  * 在 TIM1 的 10 ms 中断中调用。
  * use_line_pid=0 时直接使用返回的基础速度和转向差；
- * use_line_pid=1 时继续执行灰度位置环。
+ * line_candidate由地图距离/方向和灰度形态共同判断，不是bitmap非零。
+ * use_line_pid=1只表示动作结束或空闲，主控制器仍须完成滚动回线验证，不能直接算成功。
  */
-Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, float right_speed);
+Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, float right_speed,
+                                          uint8_t line_candidate);
 
 Avoidance_State Avoidance_GetState(void);
+
+/* 当前这次避障往哪边避（IDLE 时为 NONE） */
+Avoidance_Direction Avoidance_GetDirection(void);
 
 #endif

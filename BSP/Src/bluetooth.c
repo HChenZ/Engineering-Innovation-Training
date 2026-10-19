@@ -10,6 +10,8 @@ static volatile uint8_t rx_buf[BT_RX_BUF_SIZE];
 static volatile uint16_t rx_head = 0; /* 中断写 */
 static volatile uint16_t rx_tail = 0; /* 主循环读 */
 static uint8_t rx_byte = 0;           /* HAL 单字节接收缓存 */
+static volatile uint8_t emergency_stop = 0U;
+static volatile uint32_t save_sequence = 0U;
 
 /* ==================== 命令缓冲 ====================
  * 不要求手机 APP 一定发换行：收到最后一个字节后 BT_IDLE_MS 内没有新字节，
@@ -32,10 +34,17 @@ static const struct
 } bt_cmd_table[] = {
     {"start", BT_CMD_START},
     {"s", BT_CMD_START},
-    {"1", BT_CMD_START},
+    {"3", BT_CMD_START},
     {"stop", BT_CMD_STOP},
     {"p", BT_CMD_STOP},
     {"0", BT_CMD_STOP},
+    {"teach", BT_CMD_TEACH},
+    {"t", BT_CMD_TEACH},
+    {"1", BT_CMD_TEACH},
+    {"save", BT_CMD_SAVE},
+    {"2", BT_CMD_SAVE},
+    {"map", BT_CMD_MAP},
+    {"m", BT_CMD_MAP},
 };
 
 /* 字符转小写 */
@@ -79,6 +88,16 @@ static void Bluetooth_Feed(void)
         rx_tail = (uint16_t)((rx_tail + 1U) & BT_RX_BUF_MASK);
         line_tick = HAL_GetTick();
 
+        /* 数字ASCII命令是独立单字节帧，立即生效；一次只返回一个命令，
+         * 剩余字节留在环形缓冲中，不能像旧版一样被最后一条覆盖。 */
+        if (b == '0' || (line_len == 0U && b >= '1' && b <= '3'))
+        {
+            const char digit[2] = {(char)b, '\0'};
+            line_len = 0U; /* '0'也可打断半条未结束的文本命令 */
+            pending_cmd = Bluetooth_Parse(digit);
+            return;
+        }
+
         if (b == '\r' || b == '\n')
         {
             /* 一行结束：解析（空行/多余换行直接忽略） */
@@ -87,11 +106,12 @@ static void Bluetooth_Feed(void)
                 line[line_len] = '\0';
                 pending_cmd = Bluetooth_Parse(line);
                 line_len = 0;
+                return;
             }
             continue;
         }
 
-        if (b < 0x20 || b > 0x7E) /* 控制字符/乱码：丢掉 */
+        if (b < 0x20 || b > 0x7E) /* 二进制命令不当作ASCII命令执行 */
             continue;
 
         if (line_len < BT_LINE_MAX - 1)
@@ -120,6 +140,8 @@ void Bluetooth_Init(void)
     line_len = 0;
     line_tick = HAL_GetTick();
     pending_cmd = BT_CMD_NONE;
+    emergency_stop = 0U;
+    save_sequence = 0U;
 
     /* 打开中断接收：每收到 1 字节进一次回调，回调里自动续上 */
     HAL_UART_Receive_DMA(&huart2, &rx_byte, 1);
@@ -132,6 +154,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     if (huart->Instance != USART2)
         return;
+
+    /* 与主循环解析独立：即使环形队列已满也必须收到急停。
+     * 不在低优先级UART/DMA回调内写左右电机，避免打断TIM1造成半组输出。 */
+    if (rx_byte == '0') emergency_stop = 1U;
+    if (rx_byte == '2') save_sequence++;
 
     next = (uint16_t)((rx_head + 1U) & BT_RX_BUF_MASK);
 
@@ -170,6 +197,21 @@ BluetoothCmd Bluetooth_GetCommand(void)
     pending_cmd = BT_CMD_NONE;
 
     return cmd;
+}
+
+uint8_t Bluetooth_EmergencyStopLatched(void) { return emergency_stop; }
+uint32_t Bluetooth_GetSaveSequence(void) { return save_sequence; }
+
+void Bluetooth_ClearEmergencyStop(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    /* 当前已排队的学习/比赛命令不允许在急停后自动重放。 */
+    rx_tail = rx_head;
+    line_len = 0U;
+    pending_cmd = BT_CMD_NONE;
+    emergency_stop = 0U;
+    __set_PRIMASK(primask);
 }
 
 void Bluetooth_SendString(const char *str)

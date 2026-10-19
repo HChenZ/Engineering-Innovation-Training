@@ -20,6 +20,8 @@ static float turn_out_differential = 0.0f;
 static uint16_t extra_turn_ticks = 0U;
 static float extra_turn_differential = 0.0f;
 static uint8_t extra_turn_skip_accumulation = 0U;
+static uint16_t turn_in_ticks = 0U;
+static uint8_t line_hint_ticks = 0U;
 
 static uint8_t SensorReadingFresh(const Ultrasonic_Reading *reading)
 {
@@ -67,6 +69,8 @@ void Avoidance_Reset(void)
     extra_turn_ticks = 0U;
     extra_turn_differential = 0.0f;
     extra_turn_skip_accumulation = 0U;
+    turn_in_ticks = 0U;
+    line_hint_ticks = 0U;
 }
 
 void Avoidance_Init(void)
@@ -163,7 +167,8 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
     waiting_for_line_direction = 0U;
 }
 
-Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, float right_speed)
+Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, float right_speed,
+                                          uint8_t line_candidate)
 {
     Avoidance_Control control;
     float steer_sign;
@@ -205,6 +210,8 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             (turn_out_ticks >= AVOIDANCE_OUT_TIMEOUT_TICKS))
         {
             avoidance_state = AVOIDANCE_STATE_TURN_IN;
+            turn_in_ticks = 0U;
+            line_hint_ticks = 0U;
             steer_sign = -steer_sign;
         }
 
@@ -216,8 +223,13 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
-        /* 按约定不使用丢线保护、最小转入时间等额外条件。 */
-        if (Track_CountConsecutiveBlackFromBitmap(bitmap) >= 2U)
+        if (turn_in_ticks < AVOIDANCE_IN_TIMEOUT_TICKS) turn_in_ticks++;
+        if (line_candidate && Track_CountConsecutiveBlackFromBitmap(bitmap) >= 2U)
+        {
+            if (line_hint_ticks < AVOIDANCE_LINE_HINT_TICKS) line_hint_ticks++;
+        }
+        else line_hint_ticks = 0U;
+        if (line_hint_ticks >= AVOIDANCE_LINE_HINT_TICKS)
         {
             /*
              * 保留原避障方向，立即切到第三段小弧线。
@@ -227,6 +239,13 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             extra_turn_ticks = 0U;
             extra_turn_differential = 0.0f;
             extra_turn_skip_accumulation = 1U;
+        }
+        else if (turn_in_ticks >= AVOIDANCE_IN_TIMEOUT_TICKS)
+        {
+            /* 不是回线成功：主控制器保留return_pending，低速验证/地图救援接手。 */
+            avoidance_state = AVOIDANCE_STATE_IDLE;
+            active_direction = AVOIDANCE_DIRECTION_NONE;
+            return control;
         }
         else
         {
@@ -279,4 +298,9 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 Avoidance_State Avoidance_GetState(void)
 {
     return avoidance_state;
+}
+
+Avoidance_Direction Avoidance_GetDirection(void)
+{
+    return active_direction;
 }
