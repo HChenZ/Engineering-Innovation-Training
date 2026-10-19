@@ -4,13 +4,13 @@
 #include "main.h"
 #include "ultrasonic.h"
 
-/* 现场调试参数：距离单位 mm，速度单位与编码器速度环一致（脉冲/10 ms）。 */
+/* 距离单位 mm，速度单位与编码器速度环一致（脉冲/10 ms）。 */
 #ifndef AVOIDANCE_SIDE_TRIGGER_MM
-#define AVOIDANCE_SIDE_TRIGGER_MM 250U
+#define AVOIDANCE_SIDE_TRIGGER_MM 265U
 #endif
 
 #ifndef AVOIDANCE_CENTER_TRIGGER_MM
-#define AVOIDANCE_CENTER_TRIGGER_MM 250U
+#define AVOIDANCE_CENTER_TRIGGER_MM 265U
 #endif
 
 #ifndef AVOIDANCE_RELEASE_EXTRA_MM
@@ -49,7 +49,7 @@
 #endif
 
 #ifndef AVOIDANCE_EXTRA_TURN_DIFF_COUNTS
-#define AVOIDANCE_EXTRA_TURN_DIFF_COUNTS 250.0f
+#define AVOIDANCE_EXTRA_TURN_DIFF_COUNTS 190.0f
 #endif
 
 #ifndef AVOIDANCE_EXTRA_TIMEOUT_TICKS
