@@ -403,7 +403,7 @@ void OLED_ShowFloatNumCompact(uint8_t x, uint8_t y, float num, uint8_t dec_len, 
 }
 
 // 显示一个字符串
-void OLED_ShowString(uint8_t x, uint8_t y, uint8_t *chr, uint8_t sizey)
+void OLED_ShowString(uint8_t x, uint8_t y, const char *chr, uint8_t sizey)
 {
     uint8_t j = 0;
     while (chr[j] != '\0')

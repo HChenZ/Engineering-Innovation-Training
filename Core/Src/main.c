@@ -154,9 +154,9 @@ int main(void)
 
   PID_Init(&pos_pid, 0.07f, 0.5f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
   PID_SetIntegralLimit(&pos_pid, -250.0f, 250.0f);
-  PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
+  PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -75.0f, 75.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_left_pid, -150.0f, 150.0f);
-  PID_Init(&speed_right_pid, 3.0f, 5.0f, 0.0f, -100.0f, 100.0f); // ki = 5.0f
+  PID_Init(&speed_right_pid, 3.0f, 5.0f, 0.0f, -75.0f, 75.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_right_pid, -150.0f, 150.0f);
 
   HAL_TIM_Base_Start_IT(&htim1);
@@ -204,12 +204,13 @@ int main(void)
       }
     }
 
+    Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
+    Ultrasonic_GetAll(readings);
+
     if (car_state == CAR_STATE_RUNNING)
     {
-      Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
       uint8_t current_bitmap = bitmap;
 
-      Ultrasonic_GetAll(readings);
       Avoidance_ProcessSensors(readings, current_bitmap, Track_GetPositionFromBitmap(current_bitmap));
     }
 
@@ -217,12 +218,45 @@ int main(void)
     {
       last_oled_tick = HAL_GetTick();
 
-      OLED_ShowSignedNum(0, 0, (int32_t)left_output, 4, 8);
-      OLED_ShowSignedNum(0, 1, (int32_t)right_output, 4, 8);
-      OLED_ShowSignedNum(0, 2, speed_left, 6, 8);
-      OLED_ShowSignedNum(0, 3, speed_right, 6, 8);
-      OLED_ShowNum(0, 4, bitmap, 3, 8);
-      OLED_ShowNum(0, 5, Avoidance_GetState(), 1, 8);
+      /* 电机占空比显示 */
+      OLED_ShowString(0, 0, "PWML:", 8);
+      OLED_ShowSignedNum(30, 0, (int32_t)left_output, 3, 8);
+
+      OLED_ShowString(64, 0, "PWMR:", 8);
+      OLED_ShowSignedNum(94, 0, (int32_t)right_output, 3, 8);
+
+      /* 电机速度显示 */
+      OLED_ShowString(0, 1, "SPL:", 8);
+      OLED_ShowSignedNum(24, 1, (int32_t)speed_left, 4, 8);
+
+      OLED_ShowString(64, 1, "SPR:", 8);
+      OLED_ShowSignedNum(88, 1, (int32_t)speed_right, 4, 8);
+
+      /* 灰度循迹显示 */
+      OLED_ShowString(0, 2, "GS:", 8);
+      OLED_ShowNum(12, 2, (int32_t)bitmap, 3, 8);
+
+      /* 超声波测距显示 */
+      OLED_ShowString(0, 3, "UL:", 8);
+      if (readings[ULTRASONIC_LEFT].valid)
+        OLED_ShowNum(18, 3, readings[ULTRASONIC_LEFT].filtered_mm, 4, 8);
+      else
+        OLED_ShowString(18, 3, "----", 8);
+      OLED_ShowString(48, 3, "mm", 8);
+
+      OLED_ShowString(0, 4, "UC:", 8);
+      if (readings[ULTRASONIC_CENTER].valid)
+        OLED_ShowNum(18, 4, readings[ULTRASONIC_CENTER].filtered_mm, 4, 8);
+      else
+        OLED_ShowString(18, 4, "----", 8);
+      OLED_ShowString(48, 4, "mm", 8);
+
+      OLED_ShowString(0, 5, "UR:", 8);
+      if (readings[ULTRASONIC_RIGHT].valid)
+        OLED_ShowNum(18, 5, readings[ULTRASONIC_RIGHT].filtered_mm, 4, 8);
+      else
+        OLED_ShowString(18, 5, "----", 8);
+      OLED_ShowString(48, 5, "mm", 8);
     }
   }
   /* USER CODE END 3 */
