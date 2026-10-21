@@ -58,12 +58,12 @@
  * 调法：黑字还会触发 → 加（50、60 一格一格试）；
  *       该回线时反而回不来、绕太远 → 减（30、20）。 */
 #ifndef AVOIDANCE_TURN_IN_MIN_TICKS
-#define AVOIDANCE_TURN_IN_MIN_TICKS 45U
+#define AVOIDANCE_TURN_IN_MIN_TICKS 40U
 #endif
 
 /* 第三段速度差根据第二段捕获黑线时最长连续黑点数选择。 */
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_2
-#define AVOIDANCE_EXTRA_SPEED_DIFF_2 2.5f
+#define AVOIDANCE_EXTRA_SPEED_DIFF_2 1.5f
 #endif
 
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_3
@@ -92,12 +92,31 @@
 #define AVOIDANCE_EXTRA_TIMEOUT_TICKS 35U
 #endif
 
+/* 第三段交回循迹后的稳定性确认，不使用固定观察窗口。 */
+#ifndef AVOIDANCE_REJOIN_STABLE_TICKS
+#define AVOIDANCE_REJOIN_STABLE_TICKS 20U
+#endif
+
+#ifndef AVOIDANCE_REJOIN_LOST_CONFIRM_TICKS
+#define AVOIDANCE_REJOIN_LOST_CONFIRM_TICKS 2U
+#endif
+
+#ifndef AVOIDANCE_REJOIN_MAX_RETRIES
+#define AVOIDANCE_REJOIN_MAX_RETRIES 2U
+#endif
+
+/* 丢线恢复时已经靠近黑线，第二段最小转入时间应短于首次避障。 */
+#ifndef AVOIDANCE_RECOVER_TURN_IN_MIN_TICKS
+#define AVOIDANCE_RECOVER_TURN_IN_MIN_TICKS 10U
+#endif
+
 typedef enum
 {
     AVOIDANCE_STATE_IDLE = 0,
     AVOIDANCE_STATE_TURN_OUT,
     AVOIDANCE_STATE_TURN_IN,
-    AVOIDANCE_STATE_EXTRA_TURN
+    AVOIDANCE_STATE_EXTRA_TURN,
+    AVOIDANCE_STATE_REJOIN_CONFIRM
 } Avoidance_State;
 
 /* LEFT/RIGHT 表示小车向哪个方向避障，不表示障碍物所在方向。 */

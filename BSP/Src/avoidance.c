@@ -7,6 +7,7 @@
 static volatile Avoidance_State avoidance_state = AVOIDANCE_STATE_IDLE;
 static volatile Avoidance_Direction pending_direction = AVOIDANCE_DIRECTION_NONE;
 static volatile Avoidance_Direction active_direction = AVOIDANCE_DIRECTION_NONE;
+static Avoidance_Direction last_avoid_direction = AVOIDANCE_DIRECTION_NONE;
 
 /* 只有主循环修改；Avoidance_Reset() 在中断中清零。 */
 static volatile uint8_t locked_sensor_mask = 0U;
@@ -20,6 +21,10 @@ static float extra_turn_travel = 0.0f;
 static uint16_t extra_turn_check_ticks = 0U;
 static uint8_t extra_turn_skip_travel = 0U;
 static float extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
+static uint8_t recovery_retry_count = 0U;
+static uint8_t rejoin_stable_ticks = 0U;
+static uint8_t rejoin_lost_ticks = 0U;
+static uint8_t recovering_turn_in = 0U;
 
 static uint8_t SensorReadingFresh(const Ultrasonic_Reading *reading)
 {
@@ -41,6 +46,15 @@ static float DirectionSign(Avoidance_Direction direction)
     return (direction == AVOIDANCE_DIRECTION_RIGHT) ? 1.0f : -1.0f;
 }
 
+static void ClearRejoinRecovery(void)
+{
+    last_avoid_direction = AVOIDANCE_DIRECTION_NONE;
+    recovery_retry_count = 0U;
+    rejoin_stable_ticks = 0U;
+    rejoin_lost_ticks = 0U;
+    recovering_turn_in = 0U;
+}
+
 static void RequestDirection(Avoidance_Direction direction)
 {
     uint32_t primask = __get_PRIMASK();
@@ -58,6 +72,7 @@ void Avoidance_Reset(void)
     avoidance_state = AVOIDANCE_STATE_IDLE;
     pending_direction = AVOIDANCE_DIRECTION_NONE;
     active_direction = AVOIDANCE_DIRECTION_NONE;
+    ClearRejoinRecovery();
     locked_sensor_mask = 0U;
     rearm_until = 0U;
     turn_out_ticks = 0U;
@@ -149,7 +164,9 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             return control;
         }
 
+        ClearRejoinRecovery();
         active_direction = pending_direction;
+        last_avoid_direction = active_direction;
         pending_direction = AVOIDANCE_DIRECTION_NONE;
         avoidance_state = AVOIDANCE_STATE_TURN_OUT;
         turn_out_ticks = 0U;
@@ -171,6 +188,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
         {
             avoidance_state = AVOIDANCE_STATE_TURN_IN;
             turn_in_ticks = 0U;      /* 保底转圈时间从进入转入段这一拍重新数 */
+            recovering_turn_in = 0U;
             steer_sign = -steer_sign;
         }
 
@@ -180,11 +198,67 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
         return control;
     }
 
+    if (avoidance_state == AVOIDANCE_STATE_REJOIN_CONFIRM)
+    {
+        if (bitmap == 0U)
+        {
+            rejoin_stable_ticks = 0U;
+            if (rejoin_lost_ticks < AVOIDANCE_REJOIN_LOST_CONFIRM_TICKS)
+            {
+                rejoin_lost_ticks++;
+            }
+
+            if (rejoin_lost_ticks >= AVOIDANCE_REJOIN_LOST_CONFIRM_TICKS)
+            {
+                if ((recovery_retry_count < AVOIDANCE_REJOIN_MAX_RETRIES) &&
+                    (last_avoid_direction != AVOIDANCE_DIRECTION_NONE))
+                {
+                    recovery_retry_count++;
+                    recovering_turn_in = 1U;
+                    active_direction = last_avoid_direction;
+                    pending_direction = AVOIDANCE_DIRECTION_NONE;
+                    avoidance_state = AVOIDANCE_STATE_TURN_IN;
+                    turn_in_ticks = 0U;
+                    rejoin_lost_ticks = 0U;
+                    /* 本周期继续执行下面的 TURN_IN，立即开始回线。 */
+                }
+                else
+                {
+                    ClearRejoinRecovery();
+                    active_direction = AVOIDANCE_DIRECTION_NONE;
+                    avoidance_state = AVOIDANCE_STATE_IDLE;
+                    return control;
+                }
+            }
+            else
+            {
+                return control;
+            }
+        }
+        else
+        {
+            rejoin_lost_ticks = 0U;
+            if (rejoin_stable_ticks < AVOIDANCE_REJOIN_STABLE_TICKS)
+            {
+                rejoin_stable_ticks++;
+            }
+
+            if (rejoin_stable_ticks >= AVOIDANCE_REJOIN_STABLE_TICKS)
+            {
+                ClearRejoinRecovery();
+                active_direction = AVOIDANCE_DIRECTION_NONE;
+                avoidance_state = AVOIDANCE_STATE_IDLE;
+            }
+            return control;
+        }
+    }
+
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
         uint8_t black_count = Track_CountBlackFromBitmap(bitmap);
         uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
         uint8_t line_detected;
+        uint16_t required_turn_in_ticks;
 
         /* 记"已经在转入段转了多少拍"（保底转圈时间用，每拍 10ms）。 */
         if (turn_in_ticks < 0xFFFFU)
@@ -203,7 +277,9 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
          *
          * AVOIDANCE_TURN_IN_MIN_TICKS = 0 时，本判断恒成立，行为与改动前完全一致。
          */
-        if ((turn_in_ticks >= AVOIDANCE_TURN_IN_MIN_TICKS) && (line_detected != 0U))
+        required_turn_in_ticks = (recovering_turn_in != 0U) ? AVOIDANCE_RECOVER_TURN_IN_MIN_TICKS : AVOIDANCE_TURN_IN_MIN_TICKS;
+
+        if ((turn_in_ticks >= required_turn_in_ticks) && (line_detected != 0U))
         {
             /* 黑线必须是一整段连续区域，才切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
@@ -265,9 +341,12 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) ||
                 (extra_turn_check_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
             {
-                avoidance_state = AVOIDANCE_STATE_IDLE;
-                active_direction = AVOIDANCE_DIRECTION_NONE;
+                last_avoid_direction = active_direction;
+                recovering_turn_in = 0U;
+                rejoin_stable_ticks = 0U;
+                rejoin_lost_ticks = 0U;
                 pending_direction = AVOIDANCE_DIRECTION_NONE;
+                avoidance_state = AVOIDANCE_STATE_REJOIN_CONFIRM;
                 rearm_until = HAL_GetTick() + AVOIDANCE_REARM_MS;   /* 交回循迹：开始冷却 */
                 return control;
             }
