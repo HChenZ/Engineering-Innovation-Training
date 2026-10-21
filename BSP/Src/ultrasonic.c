@@ -18,7 +18,6 @@
 #define ULTRASONIC_RELEASE_TIMEOUT_US 100000U
 #define ULTRASONIC_GUARD_US 20000U
 
-#define ULTRASONIC_FILTER_DEPTH 3U
 #define ULTRASONIC_MISS_LIMIT 2U
 #define ULTRASONIC_ECHO_US_MAX 36000U /* 对应约 612 cm，用于排除异常长脉冲 */
 
@@ -32,13 +31,10 @@ typedef struct
 
 typedef struct
 {
-    uint16_t history_mm[ULTRASONIC_FILTER_DEPTH];
     uint16_t filtered_mm;
     uint16_t latest_mm;
     uint16_t echo_us;
     uint32_t last_valid_tick;
-    uint8_t history_pos;
-    uint8_t history_count;
     uint8_t missed_cycles;
     uint8_t valid;
 } Ultrasonic_Filter;
@@ -106,35 +102,8 @@ static bool Ultrasonic_EchoHigh(uint8_t sensor)
     return HAL_GPIO_ReadPin(hw->echo_port, hw->echo_pin) == GPIO_PIN_SET;
 }
 
-static uint16_t Ultrasonic_Median3(uint16_t a, uint16_t b, uint16_t c)
+static void Ultrasonic_ClearFilter(Ultrasonic_Filter *filter)
 {
-    uint16_t temp;
-
-    if (a > b)
-    {
-        temp = a;
-        a = b;
-        b = temp;
-    }
-    if (b > c)
-    {
-        b = c;
-    }
-    if (a > b)
-    {
-        b = a;
-    }
-
-    return b;
-}
-
-static void Ultrasonic_ClearHistory(Ultrasonic_Filter *filter)
-{
-    filter->history_mm[0] = ULTRASONIC_INVALID_MM;
-    filter->history_mm[1] = ULTRASONIC_INVALID_MM;
-    filter->history_mm[2] = ULTRASONIC_INVALID_MM;
-    filter->history_pos = 0U;
-    filter->history_count = 0U;
     filter->filtered_mm = ULTRASONIC_INVALID_MM;
     filter->latest_mm = ULTRASONIC_INVALID_MM;
     filter->echo_us = 0U;
@@ -145,30 +114,9 @@ static void Ultrasonic_ClearHistory(Ultrasonic_Filter *filter)
 static void Ultrasonic_RecordSuccess(uint8_t sensor, uint16_t distance_mm, uint16_t echo_us)
 {
     Ultrasonic_Filter *filter = &ultrasonic_filter[sensor];
-    uint16_t median = distance_mm;
 
-    filter->history_mm[filter->history_pos] = distance_mm;
-    filter->history_pos++;
-    if (filter->history_pos >= ULTRASONIC_FILTER_DEPTH)
-    {
-        filter->history_pos = 0U;
-    }
-    if (filter->history_count < ULTRASONIC_FILTER_DEPTH)
-    {
-        filter->history_count++;
-    }
-
-    if (filter->history_count >= 3U)
-    {
-        median = Ultrasonic_Median3(filter->history_mm[0], filter->history_mm[1], filter->history_mm[2]);
-    }
-    else if (filter->history_count == 2U)
-    {
-        uint32_t sum = (uint32_t)filter->history_mm[0] + (uint32_t)filter->history_mm[1];
-        median = (uint16_t)((sum + 1U) / 2U);
-    }
-
-    filter->filtered_mm = median;
+    /* 每次有效测量直接更新输出，不再等待多个样本。 */
+    filter->filtered_mm = distance_mm;
     filter->latest_mm = distance_mm;
     filter->echo_us = echo_us;
     filter->last_valid_tick = HAL_GetTick();
@@ -187,10 +135,10 @@ static void Ultrasonic_RecordMiss(uint8_t sensor)
         filter->missed_cycles++;
     }
 
-    /* 保留一次中值结果以跨越偶发漏回波；连续失败则立即失效。 */
+    /* 保留一次最近有效结果以跨越偶发漏回波；连续失败则立即失效。 */
     if (filter->missed_cycles >= ULTRASONIC_MISS_LIMIT)
     {
-        Ultrasonic_ClearHistory(filter);
+        Ultrasonic_ClearFilter(filter);
         filter->missed_cycles = ULTRASONIC_MISS_LIMIT;
     }
 }
@@ -457,7 +405,7 @@ void Ultrasonic_ResetFilters(void)
 
     for (i = 0U; i < ULTRASONIC_SENSOR_COUNT; i++)
     {
-        Ultrasonic_ClearHistory(&ultrasonic_filter[i]);
+        Ultrasonic_ClearFilter(&ultrasonic_filter[i]);
         ultrasonic_filter[i].last_valid_tick = tick;
     }
 }

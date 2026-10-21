@@ -27,7 +27,7 @@ typedef enum
 
 typedef struct
 {
-    uint16_t filtered_mm; /* 最近三次有效采样的中值，INVALID 表示当前不可用 */
+    uint16_t filtered_mm; /* 最近一次有效测距，INVALID 表示当前不可用 */
     uint16_t latest_mm;   /* 最近一次有效原始距离，INVALID 表示最近一次无回波 */
     uint16_t echo_us;     /* 最近一次有效回波的高电平宽度，单位 us */
     uint32_t age_ms;      /* 距离最近一次有效采样的时间 */
@@ -49,7 +49,7 @@ void Ultrasonic_Init(void);
 void Ultrasonic_Process(void);
 
 /*
- * 读取指定模块的中值滤波距离。
+ * 读取指定模块的最近有效距离。
  *
  * 返回 true 时 distance_mm 写入有效距离；返回 false 表示尚未采到数据、
  * 连续无回波、超量程，或者数据超过 ULTRASONIC_STALE_MS。

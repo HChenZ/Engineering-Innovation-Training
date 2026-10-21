@@ -73,7 +73,7 @@
  * 达到该值之前，即使检测到黑线也不交回循迹。
  */
 #ifndef AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS
-#define AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS 100.0f
+#define AVOIDANCE_EXTRA_MIN_TRAVEL_COUNTS 90.0f
 #endif
 
 /* 灰度第 3~4 路（中间两路）任意一路检测到黑线时结束第三段 */
