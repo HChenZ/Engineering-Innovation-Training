@@ -6,7 +6,7 @@
 
 /* 距离单位 mm，速度单位与编码器速度环一致（脉冲/10 ms）。 */
 #ifndef AVOIDANCE_SIDE_TRIGGER_MM
-#define AVOIDANCE_SIDE_TRIGGER_MM 280U
+#define AVOIDANCE_SIDE_TRIGGER_MM 300U
 #endif
 
 #ifndef AVOIDANCE_RELEASE_EXTRA_MM
@@ -52,12 +52,12 @@
  * 调法：黑字还会触发 → 加（50、60 一格一格试）；
  *       该回线时反而回不来、绕太远 → 减（30、20）。 */
 #ifndef AVOIDANCE_TURN_IN_MIN_TICKS
-#define AVOIDANCE_TURN_IN_MIN_TICKS 40U
+#define AVOIDANCE_TURN_IN_MIN_TICKS 45U
 #endif
 
 /* 第三段速度差根据第二段捕获黑线时最长连续黑点数选择。 */
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_2
-#define AVOIDANCE_EXTRA_SPEED_DIFF_2 3.0f
+#define AVOIDANCE_EXTRA_SPEED_DIFF_2 2.5f
 #endif
 
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_3

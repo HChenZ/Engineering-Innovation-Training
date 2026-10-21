@@ -58,6 +58,9 @@ typedef enum
 #define PID_PERIOD_S 0.01f
 #define TRACK_ALL_BLACK_BITMAP 0xFFU
 
+/* 发车后至少要跑这么久，全黑终点判定才允许触发（防起点线/中途黑块误停） */
+#define TRACK_STOP_MIN_RUN_MS 12000U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -93,6 +96,7 @@ static volatile uint8_t car_state = CAR_STATE_STOPPED;
 static volatile uint8_t car_start_pending = 0U;
 static volatile uint8_t car_stop_pending = 0U;
 static volatile uint8_t car_endpoint_armed = 0U;
+static uint32_t run_start_tick = 0U;   /* 发车时刻（仅 TIM1 中断访问） */
 
 /* 仅在 TIM1 中断中访问。 */
 static uint8_t line_is_lost = 1U;
@@ -242,12 +246,12 @@ int main(void)
         OLED_ShowString(18, 3, "----", 8);
       OLED_ShowString(48, 3, "mm", 8);
 
-      OLED_ShowString(0, 5, "UR:", 8);
+      OLED_ShowString(0, 4, "UR:", 8);
       if (readings[ULTRASONIC_RIGHT].valid)
-        OLED_ShowNum(18, 5, readings[ULTRASONIC_RIGHT].filtered_mm, 4, 8);
+        OLED_ShowNum(18, 4, readings[ULTRASONIC_RIGHT].filtered_mm, 4, 8);
       else
-        OLED_ShowString(18, 5, "----", 8);
-      OLED_ShowString(48, 5, "mm", 8);
+        OLED_ShowString(18, 4, "----", 8);
+      OLED_ShowString(48, 4, "mm", 8);
     }
   }
   /* USER CODE END 3 */
@@ -342,6 +346,7 @@ static void Car_BeginRun(void)
 {
   Car_ResetControllers();
   car_endpoint_armed = 0U;
+  run_start_tick = HAL_GetTick();   /* 记录发车时刻，终点判定 15 秒闸用 */
   car_state = CAR_STATE_RUNNING;
 }
 
@@ -415,7 +420,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
       car_endpoint_armed = 1U;
     }
-    else if (car_endpoint_armed != 0U)
+    else if ((car_endpoint_armed != 0U) &&
+             ((HAL_GetTick() - run_start_tick) >= TRACK_STOP_MIN_RUN_MS))
     {
       Car_Finish();
       return;
