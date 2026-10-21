@@ -10,6 +10,7 @@ static volatile Avoidance_Direction active_direction = AVOIDANCE_DIRECTION_NONE;
 
 /* 只有主循环修改；Avoidance_Reset() 在中断中清零。 */
 static volatile uint8_t locked_sensor_mask = 0U;
+static uint32_t rearm_until = 0U;   /* 绕行后的触发冷却截止时刻 */
 
 /* 只有 TIM1 中断修改。 */
 static uint16_t turn_out_ticks = 0U;
@@ -58,6 +59,7 @@ void Avoidance_Reset(void)
     pending_direction = AVOIDANCE_DIRECTION_NONE;
     active_direction = AVOIDANCE_DIRECTION_NONE;
     locked_sensor_mask = 0U;
+    rearm_until = 0U;
     turn_out_ticks = 0U;
     turn_in_ticks = 0U;
     turn_out_differential = 0.0f;
@@ -98,6 +100,12 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
     if (((locked_sensor_mask & SENSOR_RIGHT_BIT) != 0U) && SensorCleared(&readings[ULTRASONIC_RIGHT], AVOIDANCE_SIDE_TRIGGER_MM))
     {
         locked_sensor_mask &= (uint8_t)~SENSOR_RIGHT_BIT;
+    }
+
+    /* 绕行结束后的冷却期内：不响应触发（解锁维护照常，冷却完探头已就绪） */
+    if ((int32_t)(HAL_GetTick() - rearm_until) < 0)
+    {
+        return;
     }
 
     if ((avoidance_state != AVOIDANCE_STATE_IDLE) || (pending_direction != AVOIDANCE_DIRECTION_NONE))
@@ -260,6 +268,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
                 avoidance_state = AVOIDANCE_STATE_IDLE;
                 active_direction = AVOIDANCE_DIRECTION_NONE;
                 pending_direction = AVOIDANCE_DIRECTION_NONE;
+                rearm_until = HAL_GetTick() + AVOIDANCE_REARM_MS;   /* 交回循迹：开始冷却 */
                 return control;
             }
         }

@@ -6,7 +6,7 @@
 
 /* 距离单位 mm，速度单位与编码器速度环一致（脉冲/10 ms）。 */
 #ifndef AVOIDANCE_SIDE_TRIGGER_MM
-#define AVOIDANCE_SIDE_TRIGGER_MM 300U
+#define AVOIDANCE_SIDE_TRIGGER_MM 280U
 #endif
 
 #ifndef AVOIDANCE_RELEASE_EXTRA_MM
@@ -15,6 +15,12 @@
 
 #ifndef AVOIDANCE_SENSOR_MAX_AGE_MS
 #define AVOIDANCE_SENSOR_MAX_AGE_MS 300U
+#endif
+
+/* 绕行结束交回循迹后的触发冷却：这段时间内不响应超声波触发，
+ * 防止刚绕完还贴着障碍物时"刚回线又立刻绕出去"。 */
+#ifndef AVOIDANCE_REARM_MS
+#define AVOIDANCE_REARM_MS 1000U
 #endif
 
 #ifndef AVOIDANCE_BASE_SPEED
