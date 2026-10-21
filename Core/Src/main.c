@@ -209,9 +209,7 @@ int main(void)
 
     if (car_state == CAR_STATE_RUNNING)
     {
-      uint8_t current_bitmap = bitmap;
-
-      Avoidance_ProcessSensors(readings, current_bitmap, Track_GetPositionFromBitmap(current_bitmap));
+      Avoidance_ProcessSensors(readings);
     }
 
     if ((HAL_GetTick() - last_oled_tick) >= 200U)
@@ -243,13 +241,6 @@ int main(void)
       else
         OLED_ShowString(18, 3, "----", 8);
       OLED_ShowString(48, 3, "mm", 8);
-
-      OLED_ShowString(0, 4, "UC:", 8);
-      if (readings[ULTRASONIC_CENTER].valid)
-        OLED_ShowNum(18, 4, readings[ULTRASONIC_CENTER].filtered_mm, 4, 8);
-      else
-        OLED_ShowString(18, 4, "----", 8);
-      OLED_ShowString(48, 4, "mm", 8);
 
       OLED_ShowString(0, 5, "UR:", 8);
       if (readings[ULTRASONIC_RIGHT].valid)
@@ -344,7 +335,7 @@ static void Car_PrepareStart(void)
   Ultrasonic_GetAll(readings);
 
   Avoidance_Reset();
-  Avoidance_ProcessSensors(readings, start_bitmap, Track_GetPositionFromBitmap(start_bitmap));
+  Avoidance_ProcessSensors(readings);
 }
 
 static void Car_BeginRun(void)

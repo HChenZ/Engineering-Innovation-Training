@@ -9,10 +9,6 @@
 #define AVOIDANCE_SIDE_TRIGGER_MM 280U
 #endif
 
-#ifndef AVOIDANCE_CENTER_TRIGGER_MM
-#define AVOIDANCE_CENTER_TRIGGER_MM 280U
-#endif
-
 #ifndef AVOIDANCE_RELEASE_EXTRA_MM
 #define AVOIDANCE_RELEASE_EXTRA_MM 60U
 #endif
@@ -27,10 +23,6 @@
 
 #ifndef AVOIDANCE_SPEED_DIFF
 #define AVOIDANCE_SPEED_DIFF 8.5f
-#endif
-
-#ifndef AVOIDANCE_WAIT_SPEED
-#define AVOIDANCE_WAIT_SPEED 12.0f
 #endif
 
 /* 第一段弧线的编码器累计差速目标；达到目标或超时即结束。 */
@@ -120,11 +112,8 @@ typedef struct
 void Avoidance_Init(void);
 void Avoidance_Reset(void);
 
-/*
- * 在主循环中调用。
- * 位置为 0 时，中间探头触发会使用最近一次有效且非零的位置。
- */
-void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT], uint8_t bitmap, int16_t line_position);
+/* 在主循环中调用；只使用左右两路超声波数据做触发判断。 */
+void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT]);
 
 /*
  * 在 TIM1 的 10 ms 中断中调用。

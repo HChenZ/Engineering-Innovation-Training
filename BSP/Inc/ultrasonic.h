@@ -8,15 +8,14 @@
 extern "C" {
 #endif
 
-/* 三路 HC-SR04 的逻辑编号。具体引脚映射见 ultrasonic.c 中的硬件表。 */
+/* 两路 HC-SR04 的逻辑编号。具体引脚映射见 ultrasonic.c 中的硬件表。 */
 typedef enum
 {
     ULTRASONIC_LEFT = 0,
-    ULTRASONIC_CENTER = 1,
-    ULTRASONIC_RIGHT = 2
+    ULTRASONIC_RIGHT = 1
 } Ultrasonic_Sensor;
 
-#define ULTRASONIC_SENSOR_COUNT 3U
+#define ULTRASONIC_SENSOR_COUNT 2U
 #define ULTRASONIC_INVALID_MM 0xFFFFU
 
 /* 模块资料标称量程为 2 cm ~ 600 cm。 */
@@ -37,14 +36,14 @@ typedef struct
 } Ultrasonic_Reading;
 
 /*
- * 初始化三路超声波模块。
+ * 初始化左右两路超声波模块。
  */
 void Ultrasonic_Init(void);
 
 /*
  * 驱动调度函数，必须在主循环中尽可能频繁地调用。
  *
- * 函数本身不做长延时，也不会等待 Echo 脉冲结束。三路模块会依次触发，
+ * 函数本身不做长延时，也不会等待 Echo 脉冲结束。左右模块会依次触发，
  * 避免同时发射造成相互串扰。Echo 边沿由 EXTI 在后台记录。
  */
 void Ultrasonic_Process(void);
@@ -60,10 +59,10 @@ bool Ultrasonic_GetDistance(Ultrasonic_Sensor sensor, uint16_t *distance_mm);
 /* 读取完整状态，适合调试、屏幕显示或做更上层的数据融合。 */
 bool Ultrasonic_GetReading(Ultrasonic_Sensor sensor, Ultrasonic_Reading *reading);
 
-/* 一次读取三路状态，数组顺序为 LEFT、CENTER、RIGHT。 */
+/* 一次读取两路状态，数组顺序为 LEFT、RIGHT。 */
 void Ultrasonic_GetAll(Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT]);
 
-/* 清空三路滤波历史；下一次成功回波会立即成为新的有效值。 */
+/* 清空两路滤波历史；下一次成功回波会立即成为新的有效值。 */
 void Ultrasonic_ResetFilters(void);
 
 #ifdef __cplusplus

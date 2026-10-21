@@ -2,17 +2,14 @@
 #include "tracking.h"
 
 #define SENSOR_LEFT_BIT (1U << ULTRASONIC_LEFT)
-#define SENSOR_CENTER_BIT (1U << ULTRASONIC_CENTER)
 #define SENSOR_RIGHT_BIT (1U << ULTRASONIC_RIGHT)
 
 static volatile Avoidance_State avoidance_state = AVOIDANCE_STATE_IDLE;
 static volatile Avoidance_Direction pending_direction = AVOIDANCE_DIRECTION_NONE;
 static volatile Avoidance_Direction active_direction = AVOIDANCE_DIRECTION_NONE;
-static volatile uint8_t waiting_for_line_direction = 0U;
 
 /* 只有主循环修改；Avoidance_Reset() 在中断中清零。 */
 static volatile uint8_t locked_sensor_mask = 0U;
-static int16_t last_nonzero_position = 0;
 
 /* 只有 TIM1 中断修改。 */
 static uint16_t turn_out_ticks = 0U;
@@ -51,7 +48,6 @@ static void RequestDirection(Avoidance_Direction direction)
     if ((avoidance_state == AVOIDANCE_STATE_IDLE) && (pending_direction == AVOIDANCE_DIRECTION_NONE))
     {
         pending_direction = direction;
-        waiting_for_line_direction = 0U;
     }
     __set_PRIMASK(primask);
 }
@@ -61,9 +57,7 @@ void Avoidance_Reset(void)
     avoidance_state = AVOIDANCE_STATE_IDLE;
     pending_direction = AVOIDANCE_DIRECTION_NONE;
     active_direction = AVOIDANCE_DIRECTION_NONE;
-    waiting_for_line_direction = 0U;
     locked_sensor_mask = 0U;
-    last_nonzero_position = 0;
     turn_out_ticks = 0U;
     turn_in_ticks = 0U;
     turn_out_differential = 0.0f;
@@ -78,7 +72,7 @@ void Avoidance_Init(void)
     Avoidance_Reset();
 }
 
-void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT], uint8_t bitmap, int16_t line_position)
+void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT])
 {
     uint8_t near_mask = 0U;
 
@@ -87,18 +81,9 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
         return;
     }
 
-    if ((bitmap != 0U) && (line_position != 0))
-    {
-        last_nonzero_position = line_position;
-    }
-
     if (SensorNear(&readings[ULTRASONIC_LEFT], AVOIDANCE_SIDE_TRIGGER_MM))
     {
         near_mask |= SENSOR_LEFT_BIT;
-    }
-    if (SensorNear(&readings[ULTRASONIC_CENTER], AVOIDANCE_CENTER_TRIGGER_MM))
-    {
-        near_mask |= SENSOR_CENTER_BIT;
     }
     if (SensorNear(&readings[ULTRASONIC_RIGHT], AVOIDANCE_SIDE_TRIGGER_MM))
     {
@@ -109,10 +94,6 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
     if (((locked_sensor_mask & SENSOR_LEFT_BIT) != 0U) && SensorCleared(&readings[ULTRASONIC_LEFT], AVOIDANCE_SIDE_TRIGGER_MM))
     {
         locked_sensor_mask &= (uint8_t)~SENSOR_LEFT_BIT;
-    }
-    if (((locked_sensor_mask & SENSOR_CENTER_BIT) != 0U) && SensorCleared(&readings[ULTRASONIC_CENTER], AVOIDANCE_CENTER_TRIGGER_MM))
-    {
-        locked_sensor_mask &= (uint8_t)~SENSOR_CENTER_BIT;
     }
     if (((locked_sensor_mask & SENSOR_RIGHT_BIT) != 0U) && SensorCleared(&readings[ULTRASONIC_RIGHT], AVOIDANCE_SIDE_TRIGGER_MM))
     {
@@ -142,29 +123,6 @@ void Avoidance_ProcessSensors(const Ultrasonic_Reading readings[ULTRASONIC_SENSO
         return;
     }
 
-    if (((near_mask & SENSOR_CENTER_BIT) != 0U) && (((locked_sensor_mask & SENSOR_CENTER_BIT) == 0U) || (waiting_for_line_direction != 0U)))
-    {
-        int16_t direction_position = (line_position != 0) ? line_position : last_nonzero_position;
-
-        locked_sensor_mask |= near_mask;
-
-        if (direction_position > 0)
-        {
-            RequestDirection(AVOIDANCE_DIRECTION_RIGHT);
-        }
-        else if (direction_position < 0)
-        {
-            RequestDirection(AVOIDANCE_DIRECTION_LEFT);
-        }
-        else
-        {
-            /* 本次启动后还没有出现过非零位置：先低速直行等待灰度方向。 */
-            waiting_for_line_direction = 1U;
-        }
-        return;
-    }
-
-    waiting_for_line_direction = 0U;
 }
 
 Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, float right_speed)
@@ -180,11 +138,6 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
     {
         if (pending_direction == AVOIDANCE_DIRECTION_NONE)
         {
-            if (waiting_for_line_direction != 0U)
-            {
-                control.use_line_pid = 0U;
-                control.base_speed = AVOIDANCE_WAIT_SPEED;
-            }
             return control;
         }
 
@@ -307,7 +260,6 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
                 avoidance_state = AVOIDANCE_STATE_IDLE;
                 active_direction = AVOIDANCE_DIRECTION_NONE;
                 pending_direction = AVOIDANCE_DIRECTION_NONE;
-                waiting_for_line_direction = 0U;
                 return control;
             }
         }

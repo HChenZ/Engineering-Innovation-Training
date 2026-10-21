@@ -8,8 +8,8 @@
  * - ECHO 高电平宽度就是超声波往返时间，距离 = 时间 * 340 m/s / 2；
  * - 超量程时 ECHO 仍可能保持高电平约 66 ms，因此必须有完整超时处理。
  *
- * 三路不能同时触发：同一空间内的 40 kHz 回波会互相串扰。这里采用
- * CENTER -> LEFT -> RIGHT 的顺序触发，并在两次触发之间留保护间隔。
+ * 左右两路不能同时触发：同一空间内的 40 kHz 回波会互相串扰。这里采用
+ * LEFT -> RIGHT 的顺序触发，并在两次触发之间留保护间隔。
  */
 
 #define ULTRASONIC_TRIGGER_PULSE_US 20U
@@ -53,20 +53,14 @@ typedef enum
     ULTRASONIC_PHASE_BUSY
 } Ultrasonic_Phase;
 
-/*
- *   LEFT -> TRIG3/PA4,  ECHO3/PA5
- *   CENTER -> TRIG2/PA10, ECHO2/PA11
- *   RIGHT -> TRIG1/PA8,  ECHO1/PA9
- */
+/* LEFT -> TRIG3/PA4, ECHO3/PA5；RIGHT -> TRIG1/PA8, ECHO1/PA9。 */
 static const Ultrasonic_Hardware ultrasonic_hw[ULTRASONIC_SENSOR_COUNT] = {
     [ULTRASONIC_LEFT] = {TRIG3_GPIO_Port, TRIG3_Pin, ECHO3_GPIO_Port, ECHO3_Pin},
-    [ULTRASONIC_CENTER] = {TRIG2_GPIO_Port, TRIG2_Pin, ECHO2_GPIO_Port, ECHO2_Pin},
     [ULTRASONIC_RIGHT] = {TRIG1_GPIO_Port, TRIG1_Pin, ECHO1_GPIO_Port, ECHO1_Pin},
 };
 
-/* 正前方优先刷新，随后补测左右两路。 */
+/* 左右两路轮流触发。 */
 static const uint8_t ultrasonic_scan_order[ULTRASONIC_SENSOR_COUNT] = {
-    ULTRASONIC_CENTER,
     ULTRASONIC_LEFT,
     ULTRASONIC_RIGHT,
 };
@@ -272,8 +266,6 @@ static void Ultrasonic_TriggerNext(void)
 
 void Ultrasonic_Init(void)
 {
-    uint32_t i;
-
     /*
      * GPIO 模式、上下拉和 EXTI 边沿属性由 CubeMX 生成的 MX_GPIO_Init() 配置。本函数必须在 MX_GPIO_Init() 之后调用。
      */
