@@ -254,6 +254,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
+        uint8_t black_count = Track_CountBlackFromBitmap(bitmap);
         uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
         uint8_t line_detected;
         uint16_t required_turn_in_ticks;
@@ -285,11 +286,11 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             extra_turn_check_ticks = 0U;
             extra_turn_skip_travel = 1U;
 
-            if (consecutive_black >= 4U)
+            if (black_count >= 4U)
             {
                 extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_4_PLUS;
             }
-            else if (consecutive_black == 3U)
+            else if (black_count == 3U)
             {
                 extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_3;
             }
