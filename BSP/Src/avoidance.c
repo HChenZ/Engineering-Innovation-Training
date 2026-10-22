@@ -21,6 +21,8 @@ static float extra_turn_travel = 0.0f;
 static uint16_t extra_turn_check_ticks = 0U;
 static uint8_t extra_turn_skip_travel = 0U;
 static float extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
+static uint8_t special_pivot_mode = 0U;
+static uint16_t special_pivot_ticks = 0U;
 static uint8_t recovery_retry_count = 0U;
 static uint8_t rejoin_stable_ticks = 0U;
 static uint8_t rejoin_lost_ticks = 0U;
@@ -82,6 +84,8 @@ void Avoidance_Reset(void)
     extra_turn_check_ticks = 0U;
     extra_turn_skip_travel = 0U;
     extra_turn_speed_diff = AVOIDANCE_EXTRA_SPEED_DIFF_2;
+    special_pivot_mode = 0U;
+    special_pivot_ticks = 0U;
 }
 
 void Avoidance_Init(void)
@@ -285,6 +289,8 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             extra_turn_travel = 0.0f;
             extra_turn_check_ticks = 0U;
             extra_turn_skip_travel = 1U;
+            special_pivot_mode = (uint8_t)(black_count >= AVOIDANCE_SPECIAL_PIVOT_MIN_BLACK_COUNT);
+            special_pivot_ticks = 0U;
 
             if (black_count >= 4U)
             {
@@ -312,6 +318,29 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
     if (avoidance_state == AVOIDANCE_STATE_EXTRA_TURN)
     {
         float average_delta;
+
+        if (special_pivot_mode != 0U)
+        {
+            if (special_pivot_ticks >= AVOIDANCE_SPECIAL_PIVOT_TICKS)
+            {
+                last_avoid_direction = active_direction;
+                recovering_turn_in = 0U;
+                rejoin_stable_ticks = 0U;
+                rejoin_lost_ticks = 0U;
+                pending_direction = AVOIDANCE_DIRECTION_NONE;
+                special_pivot_mode = 0U;
+                avoidance_state = AVOIDANCE_STATE_REJOIN_CONFIRM;
+                rearm_until = HAL_GetTick() + AVOIDANCE_REARM_MS;
+                return control;
+            }
+
+            steer_sign = DirectionSign(active_direction);
+            control.use_line_pid = 0U;
+            control.base_speed = 0.0f;
+            control.steer = steer_sign * AVOIDANCE_SPECIAL_PIVOT_SPEED;
+            special_pivot_ticks++;
+            return control;
+        }
 
         /*
          * 进入第三段的首个速度反馈来自第二段，不能计入第三段行驶距离。
@@ -344,6 +373,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
                 rejoin_stable_ticks = 0U;
                 rejoin_lost_ticks = 0U;
                 pending_direction = AVOIDANCE_DIRECTION_NONE;
+                special_pivot_mode = 0U;
                 avoidance_state = AVOIDANCE_STATE_REJOIN_CONFIRM;
                 rearm_until = HAL_GetTick() + AVOIDANCE_REARM_MS;   /* 交回循迹：开始冷却 */
                 return control;
