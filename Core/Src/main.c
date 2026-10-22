@@ -61,6 +61,10 @@ typedef enum
 /* 发车后至少要跑这么久，全黑终点判定才允许触发（防起点线/中途黑块误停） */
 #define TRACK_STOP_MIN_RUN_MS 12000U
 
+/* 发车后该时间段内禁止避障，只执行循迹（左闭右开）。 */
+#define AVOIDANCE_PAUSE_BEGIN_MS 4500U
+#define AVOIDANCE_PAUSE_END_MS   7000U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -82,6 +86,7 @@ static void Car_RequestStart(void);
 static void Car_RequestStop(void);
 static uint8_t Car_CanStart(void);
 static void Car_PrepareStart(void);
+static uint8_t Car_AvoidancePauseActive(void);
 
 /* USER CODE END PFP */
 
@@ -97,6 +102,8 @@ static volatile uint8_t car_start_pending = 0U;
 static volatile uint8_t car_stop_pending = 0U;
 static volatile uint8_t car_endpoint_armed = 0U;
 static uint32_t run_start_tick = 0U;   /* 发车时刻（仅 TIM1 中断访问） */
+static volatile uint8_t avoidance_pause_active = 0U;   /* TIM1 写入，主循环读取 */
+static uint8_t avoidance_pause_latch = 0U;             /* 仅 TIM1 中断访问 */
 
 /* 仅在 TIM1 中断中访问。 */
 static uint8_t line_is_lost = 1U;
@@ -211,7 +218,7 @@ int main(void)
     Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
     Ultrasonic_GetAll(readings);
 
-    if (car_state == CAR_STATE_RUNNING)
+    if ((car_state == CAR_STATE_RUNNING) && (avoidance_pause_active == 0U))
     {
       Avoidance_ProcessSensors(readings);
     }
@@ -326,6 +333,14 @@ static uint8_t Car_CanStart(void)
   return (uint8_t)(((state == CAR_STATE_STOPPED) || (state == CAR_STATE_FINISHED)) && (car_start_pending == 0U) && (car_stop_pending == 0U));
 }
 
+static uint8_t Car_AvoidancePauseActive(void)
+{
+  uint32_t elapsed_ms = HAL_GetTick() - run_start_tick;
+
+  return (uint8_t)((elapsed_ms >= AVOIDANCE_PAUSE_BEGIN_MS) &&
+                   (elapsed_ms < AVOIDANCE_PAUSE_END_MS));
+}
+
 static void Car_PrepareStart(void)
 {
   Ultrasonic_Reading readings[ULTRASONIC_SENSOR_COUNT];
@@ -347,6 +362,8 @@ static void Car_BeginRun(void)
   Car_ResetControllers();
   car_endpoint_armed = 0U;
   run_start_tick = HAL_GetTick();   /* 记录发车时刻，终点判定 15 秒闸用 */
+  avoidance_pause_active = 0U;
+  avoidance_pause_latch = 0U;
   car_state = CAR_STATE_RUNNING;
 }
 
@@ -425,6 +442,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       Car_Finish();
       return;
     }
+
+    /*
+     * 暂停窗口内每个控制周期都复位一次，立即终止进入窗口前已开始的避障；
+     * 窗口结束后的首个周期再清理一次，避免中断与主循环交界处残留触发请求。
+     */
+    avoidance_pause_active = Car_AvoidancePauseActive();
+    if ((avoidance_pause_active != 0U) || (avoidance_pause_latch != 0U))
+    {
+      Avoidance_Reset();
+    }
+    avoidance_pause_latch = avoidance_pause_active;
 
     Avoidance_Control avoidance_control = Avoidance_UpdateControl(bitmap, (float)speed_left, (float)speed_right);
     float base_speed;
