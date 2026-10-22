@@ -156,7 +156,7 @@ int main(void)
   Ultrasonic_Init();
   Avoidance_Init();
 
-  PID_Init(&pos_pid, 0.07f, 0.5f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
+  PID_Init(&pos_pid, 0.05f, 0.5f, 0.0f, -40.0f, 40.0f); // ki = 0.5f
   PID_SetIntegralLimit(&pos_pid, -250.0f, 250.0f);
   PID_Init(&speed_left_pid, 3.0f, 5.0f, 0.0f, -75.0f, 75.0f); // ki = 5.0f
   PID_SetIntegralLimit(&speed_left_pid, -150.0f, 150.0f);
@@ -420,8 +420,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
       car_endpoint_armed = 1U;
     }
-    else if ((car_endpoint_armed != 0U) &&
-             ((HAL_GetTick() - run_start_tick) >= TRACK_STOP_MIN_RUN_MS))
+    else if ((car_endpoint_armed != 0U) && ((HAL_GetTick() - run_start_tick) >= TRACK_STOP_MIN_RUN_MS))
     {
       Car_Finish();
       return;

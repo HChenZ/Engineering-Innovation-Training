@@ -63,7 +63,7 @@
 
 /* 第三段速度差根据第二段捕获黑线时最长连续黑点数选择。 */
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_2
-#define AVOIDANCE_EXTRA_SPEED_DIFF_2 1.5f
+#define AVOIDANCE_EXTRA_SPEED_DIFF_2 1.0f
 #endif
 
 #ifndef AVOIDANCE_EXTRA_SPEED_DIFF_3

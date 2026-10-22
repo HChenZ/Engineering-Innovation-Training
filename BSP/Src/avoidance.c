@@ -183,8 +183,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             turn_out_ticks++;
         }
 
-        if (((steer_sign * turn_out_differential) >= AVOIDANCE_OUT_TURN_DIFF_COUNTS) ||
-            (turn_out_ticks >= AVOIDANCE_OUT_TIMEOUT_TICKS))
+        if (((steer_sign * turn_out_differential) >= AVOIDANCE_OUT_TURN_DIFF_COUNTS) || (turn_out_ticks >= AVOIDANCE_OUT_TIMEOUT_TICKS))
         {
             avoidance_state = AVOIDANCE_STATE_TURN_IN;
             turn_in_ticks = 0U;      /* 保底转圈时间从进入转入段这一拍重新数 */
@@ -255,7 +254,6 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
     if (avoidance_state == AVOIDANCE_STATE_TURN_IN)
     {
-        uint8_t black_count = Track_CountBlackFromBitmap(bitmap);
         uint8_t consecutive_black = Track_CountConsecutiveBlackFromBitmap(bitmap);
         uint8_t line_detected;
         uint16_t required_turn_in_ticks;
@@ -266,8 +264,8 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             turn_in_ticks++;
         }
 
-        /* 黑线必须是一整段连续区域（≥2 个黑点），才算真的抓到了线。 */
-        line_detected = (uint8_t)((black_count >= 2U) && (black_count == consecutive_black));
+        /* 只要存在至少 2 个相邻黑点，就认为捕获到黑线。 */
+        line_detected = (uint8_t)(consecutive_black >= 2U);
 
         /*
          * 保底转圈时间没到之前【只转、不判线】（见 avoid.h 里
@@ -281,7 +279,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
 
         if ((turn_in_ticks >= required_turn_in_ticks) && (line_detected != 0U))
         {
-            /* 黑线必须是一整段连续区域，才切到第三段小弧线。 */
+            /* 已捕获至少 2 个连续黑点，切到第三段小弧线。 */
             avoidance_state = AVOIDANCE_STATE_EXTRA_TURN;
             extra_turn_travel = 0.0f;
             extra_turn_check_ticks = 0U;
@@ -338,8 +336,7 @@ Avoidance_Control Avoidance_UpdateControl(uint8_t bitmap, float left_speed, floa
             }
 
             /* 达到最小距离后，才允许由黑线与超时结束第三段。 */
-            if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) ||
-                (extra_turn_check_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
+            if (((bitmap & AVOIDANCE_MIDDLE_FOUR_MASK) != 0U) || (extra_turn_check_ticks >= AVOIDANCE_EXTRA_TIMEOUT_TICKS))
             {
                 last_avoid_direction = active_direction;
                 recovering_turn_in = 0U;
