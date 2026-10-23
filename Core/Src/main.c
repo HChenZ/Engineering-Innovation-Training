@@ -61,9 +61,8 @@ typedef enum
 /* 发车后至少要跑这么久，全黑终点判定才允许触发（防起点线/中途黑块误停） */
 #define TRACK_STOP_MIN_RUN_MS 12000U
 
-/* 发车后该时间段内禁止避障，只执行循迹（左闭右开）。 */
-#define AVOIDANCE_PAUSE_BEGIN_MS 4500U
-#define AVOIDANCE_PAUSE_END_MS   7000U
+/* 发车后前 7.0s 内禁止避障，只执行循迹。 */
+#define AVOIDANCE_PAUSE_END_MS 7000U
 
 /* USER CODE END PD */
 
@@ -337,8 +336,7 @@ static uint8_t Car_AvoidancePauseActive(void)
 {
   uint32_t elapsed_ms = HAL_GetTick() - run_start_tick;
 
-  return (uint8_t)((elapsed_ms >= AVOIDANCE_PAUSE_BEGIN_MS) &&
-                   (elapsed_ms < AVOIDANCE_PAUSE_END_MS));
+  return (uint8_t)(elapsed_ms < AVOIDANCE_PAUSE_END_MS);
 }
 
 static void Car_PrepareStart(void)
@@ -362,7 +360,7 @@ static void Car_BeginRun(void)
   Car_ResetControllers();
   car_endpoint_armed = 0U;
   run_start_tick = HAL_GetTick();   /* 记录发车时刻，终点判定 15 秒闸用 */
-  avoidance_pause_active = 0U;
+  avoidance_pause_active = 1U;
   avoidance_pause_latch = 0U;
   car_state = CAR_STATE_RUNNING;
 }
@@ -444,8 +442,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 
     /*
-     * 暂停窗口内每个控制周期都复位一次，立即终止进入窗口前已开始的避障；
-     * 窗口结束后的首个周期再清理一次，避免中断与主循环交界处残留触发请求。
+     * 发车后的前 7.0s 内每个控制周期都复位一次，取消发车前或运行中已开始的
+     * 避障；7.0s 后的首个周期再清理一次，避免中断与主循环交界处残留触发请求。
      */
     avoidance_pause_active = Car_AvoidancePauseActive();
     if ((avoidance_pause_active != 0U) || (avoidance_pause_latch != 0U))
